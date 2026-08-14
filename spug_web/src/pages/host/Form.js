@@ -18,8 +18,9 @@ export default observer(function () {
   const [fileList, setFileList] = useState([]);
 
   useEffect(() => {
-    if (store.record.pkey) {
-      setFileList([{uid: '0', name: '独立密钥', data: store.record.pkey}])
+    if (store.record.has_pkey) {
+      const name = store.record.credential_source === 'identity' ? '已绑定的托管身份' : '已配置的主机密钥';
+      setFileList([{uid: '0', name}])
     }
   }, [])
 
@@ -29,6 +30,7 @@ export default observer(function () {
     formData['id'] = store.record.id;
     const file = fileList[0];
     if (file && file.data) formData['pkey'] = file.data;
+    formData['clear_pkey'] = Boolean(store.record.credential_source === 'host' && !file);
     http.post('/api/host/', formData)
       .then(res => {
         if (res === 'auth fail') {
@@ -94,6 +96,7 @@ export default observer(function () {
   }
 
   const info = store.record;
+  const hasManagedIdentity = store.record.credential_source === 'identity';
   return (
     <Modal
       visible
@@ -127,10 +130,16 @@ export default observer(function () {
             <Input addonBefore="-p" placeholder="端口"/>
           </Form.Item>
         </Form.Item>
-        <Form.Item label="独立密钥" extra="默认使用全局密钥，如果上传了独立密钥（私钥）则优先使用该密钥。">
+        <Form.Item label="主机凭据" extra={hasManagedIdentity
+          ? '该主机正在使用托管身份，请在资产凭据中心修改或解绑。'
+          : '密钥内容不会返回浏览器；可在资产凭据中心统一绑定，或在此替换独立私钥。'}>
           <Upload name="file" fileList={fileList} headers={{'X-Token': X_TOKEN}} beforeUpload={handleUpload}
+                  disabled={hasManagedIdentity}
+                  showUploadList={{showRemoveIcon: !hasManagedIdentity}}
                   onChange={handleUploadChange}>
-            {fileList.length === 0 ? <Button loading={uploading} icon={<UploadOutlined/>}>点击上传</Button> : null}
+            {fileList.length === 0 && !hasManagedIdentity
+              ? <Button loading={uploading} icon={<UploadOutlined/>}>点击上传</Button>
+              : null}
           </Upload>
         </Form.Item>
         <Form.Item name="desc" label="备注信息">

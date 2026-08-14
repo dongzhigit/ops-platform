@@ -4,6 +4,8 @@
 from django_redis import get_redis_connection
 from apps.host.models import Host
 from apps.monitor.utils import handle_notify
+from apps.account.utils import has_host_perm
+from apps.monitor.models import Detection
 from socket import socket
 import subprocess
 import platform
@@ -85,11 +87,14 @@ def monitor_worker_handler(job):
     else:
         command = f'ps -ef|grep -v grep|grep {extra!r}' if tp == '3' else extra
         host = Host.objects.filter(pk=addr).first()
-        if not host:
+        detection = Detection.objects.select_related('created_by').filter(pk=task_id).first()
+        if not detection or not has_host_perm(detection.created_by, addr, action='monitor.run'):
+            is_ok, message = False, 'authorization revoked before monitor execution'
+        elif not host:
             is_ok, message = False, f'unknown host id for {addr!r}'
         else:
             is_ok, message = host_executor(host, command)
-        target = f'{host.name}({host.hostname})'
+        target = f'{host.name}({host.hostname})' if host else str(addr)
 
     rds, key, f_count, f_time = get_redis_connection(), f'spug:det:{task_id}', f'c_{addr}', f't_{addr}'
     v_count, v_time = rds.hmget(key, f_count, f_time)

@@ -21,7 +21,7 @@ def get_statistic(request):
         app = App.objects.count()
         host = Host.objects.count()
     else:
-        deploy_perms, host_perms = request.user.deploy_perms, get_host_perms(request.user)
+        deploy_perms, host_perms = request.user.deploy_perms, get_host_perms(request.user, action='host.view')
         app = App.objects.filter(id__in=deploy_perms['apps']).count()
         host = len(host_perms)
     data = {

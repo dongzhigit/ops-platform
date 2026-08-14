@@ -1,34 +1,85 @@
-version: "3.3"
+name: spug-ops
+
 services:
   db:
-    image: mariadb:10.8
+    image: mariadb:10.11
     container_name: spug-db
-    restart: always
-    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    restart: unless-stopped
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
     volumes:
-      - /data/spug/mysql:/var/lib/mysql
+      - ${SPUG_DATA_ROOT:-./data}/mysql:/var/lib/mysql
     environment:
-      - MYSQL_DATABASE=spug
-      - MYSQL_USER=spug
-      - MYSQL_PASSWORD=spug.cc
-      - MYSQL_ROOT_PASSWORD=spug.cc
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-spug}
+      MYSQL_USER: ${MYSQL_USER:-spug}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?MYSQL_PASSWORD is required}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD is required}
+    healthcheck:
+      test: ["CMD-SHELL", "mariadb-admin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    networks:
+      - backend
+
   spug:
-    image: openspug/spug-service
+    # The legacy M0 image currently depends on CentOS 7 x86_64 packages.
+    platform: ${SPUG_PLATFORM:-linux/amd64}
+    build:
+      # Build from the repository root so the image contains this fork's API
+      # and web sources instead of downloading an upstream release at runtime.
+      context: ../..
+      dockerfile: docs/docker/Dockerfile
+    image: ${SPUG_IMAGE:-spug-ops:local}
     container_name: spug
-    privileged: true
-    restart: always
+    restart: unless-stopped
+    init: true
+    cap_add:
+      # SSHFS file distribution requires FUSE mount capability.
+      - SYS_ADMIN
+    devices:
+      - /dev/fuse:/dev/fuse
+    security_opt:
+      - apparmor:unconfined
     volumes:
-      - /data/spug/service:/data/spug
-      - /data/spug/repos:/data/repos
+      - ${SPUG_DATA_ROOT:-./data}/service/logs:/data/spug/spug_api/logs
+      - ${SPUG_DATA_ROOT:-./data}/service/storage:/data/spug/spug_api/storage
+      - ${SPUG_DATA_ROOT:-./data}/repos:/data/repos
     ports:
-      # 如果80端口被占用可替换为其他端口，例如: - "8000:80"
-      - "80:80"
+      # Keep the service private by default. Put a TLS reverse proxy in front
+      # or explicitly change SPUG_BIND_HOST for a trusted network.
+      - ${SPUG_BIND_HOST:-127.0.0.1}:${SPUG_PORT:-80}:80
     environment:
-      - SPUG_DOCKER_VERSION=v3.4.0
-      - MYSQL_DATABASE=spug
-      - MYSQL_USER=spug
-      - MYSQL_PASSWORD=spug.cc
-      - MYSQL_HOST=db
-      - MYSQL_PORT=3306
+      SPUG_ENV: production
+      SPUG_SECRET_KEY: ${SPUG_SECRET_KEY:?SPUG_SECRET_KEY is required}
+      SPUG_CREDENTIAL_MASTER_KEY: ${SPUG_CREDENTIAL_MASTER_KEY:?SPUG_CREDENTIAL_MASTER_KEY is required}
+      SPUG_CREDENTIAL_KEYRING: ${SPUG_CREDENTIAL_KEYRING:-}
+      SPUG_CREDENTIAL_PRIMARY_KEY_ID: ${SPUG_CREDENTIAL_PRIMARY_KEY_ID:-primary}
+      SPUG_ALLOWED_HOSTS: ${SPUG_ALLOWED_HOSTS:?SPUG_ALLOWED_HOSTS is required}
+      SPUG_CSRF_TRUSTED_ORIGINS: ${SPUG_CSRF_TRUSTED_ORIGINS:-}
+      SPUG_SECURE_COOKIES: ${SPUG_SECURE_COOKIES:-true}
+      SPUG_SSL_REDIRECT: ${SPUG_SSL_REDIRECT:-false}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-spug}
+      MYSQL_USER: ${MYSQL_USER:-spug}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?MYSQL_PASSWORD is required}
+      MYSQL_HOST: db
+      MYSQL_PORT: 3306
     depends_on:
-      - db
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1/ >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 12
+      start_period: 90s
+    networks:
+      - frontend
+      - backend
+
+networks:
+  frontend:
+  backend:
+    internal: true

@@ -1,0 +1,11 @@
+.git
+.idea
+**/.DS_Store
+**/__pycache__
+**/*.pyc
+docs/docker/.env
+docs/docker/data
+spug_api/logs
+spug_api/storage
+spug_web/build
+spug_web/node_modules

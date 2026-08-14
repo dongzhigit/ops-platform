@@ -10,8 +10,10 @@ class Command(BaseCommand):
     help = '初始化/更新数据库'
 
     def handle(self, *args, **options):
-        args = ['manage.py', 'makemigrations']
         apps = [x.split('.')[-1] for x in settings.INSTALLED_APPS if x.startswith('apps.')]
-        execute_from_command_line(args + apps)
-        execute_from_command_line(['manage.py', 'migrate'])
+        # Production releases must ship their migration files. Generating them
+        # inside a container makes schema history depend on an ephemeral
+        # filesystem and can silently skip changes after an image replacement.
+        execute_from_command_line(['manage.py', 'makemigrations', '--check', '--dry-run'] + apps)
+        execute_from_command_line(['manage.py', 'migrate', '--noinput'])
         self.stdout.write(self.style.SUCCESS('初始化/更新成功'))

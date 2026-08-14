@@ -9,6 +9,7 @@ from apps.schedule.scheduler import Scheduler
 from apps.schedule.models import Task, History
 from apps.schedule.executors import dispatch_job
 from apps.host.models import Host
+from apps.account.utils import has_host_perm
 from django.conf import settings
 from libs import json_response, JsonParser, Argument, human_datetime, auth
 import json
@@ -36,6 +37,9 @@ class Schedule(View):
             Argument('desc', required=False),
         ).parse(request.body)
         if error is None:
+            host_ids = [item for item in form.targets if str(item) != 'local']
+            if not has_host_perm(request.user, host_ids, action='schedule.run'):
+                return json_response(error='无权在目标主机创建计划任务，请联系管理员')
             form.targets = json.dumps(form.targets)
             form.rst_notify = json.dumps(form.rst_notify)
             if form.trigger == 'cron':
@@ -72,6 +76,9 @@ class Schedule(View):
         ).parse(request.body, True)
         if error is None:
             task = Task.objects.get(pk=form.id)
+            host_ids = [item for item in json.loads(task.targets) if str(item) != 'local']
+            if form.get('is_active') and not has_host_perm(request.user, host_ids, action='schedule.run'):
+                return json_response(error='无权在目标主机启用计划任务，请联系管理员')
             if form.get('is_active') is not None:
                 task.is_active = form.is_active
                 task.latest_id = None
@@ -119,6 +126,9 @@ class HistoryView(View):
         task = Task.objects.filter(pk=t_id).first()
         if not task:
             return json_response(error='未找到指定任务')
+        host_ids = [item for item in json.loads(task.targets) if str(item) != 'local']
+        if not has_host_perm(request.user, host_ids, action='schedule.run'):
+            return json_response(error='无权在目标主机执行计划任务，请联系管理员')
         outputs, status = {}, 1
         for host_id in json.loads(task.targets):
             code, duration, out = dispatch_job(host_id, task.interpreter, task.command)

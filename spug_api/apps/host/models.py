@@ -22,14 +22,72 @@ class Host(models.Model, ModelMixin):
 
     @property
     def private_key(self):
-        return self.pkey or AppSetting.get('private_key')
+        profile = self.get_connection_profile()
+        if profile['credential_type'] != 'ssh_key':
+            raise RuntimeError('the selected SSH identity does not contain a private key')
+        return profile['secret']
 
-    def get_ssh(self, pkey=None, default_env=None):
-        pkey = pkey or self.private_key
-        return SSH(self.hostname, self.port, self.username, pkey, default_env=default_env)
+    @property
+    def ssh_username(self):
+        return self.get_connection_metadata()['username']
+
+    def get_default_identity_binding(self, protocol='ssh'):
+        return self.asset_identity_bindings.select_related(
+            'identity', 'identity__credential'
+        ).filter(
+            is_default=True,
+            identity__protocol=protocol,
+        ).first()
+
+    def get_connection_metadata(self, protocol='ssh'):
+        binding = self.get_default_identity_binding(protocol=protocol)
+        return self._connection_metadata(binding)
+
+    def _connection_metadata(self, binding):
+        if binding:
+            identity = binding.identity
+            credential = identity.credential
+            if not identity.is_active or not credential.is_active:
+                raise RuntimeError('the selected SSH identity or credential is inactive')
+            return {
+                'identity_id': identity.id,
+                'username': identity.username,
+                'credential_type': credential.type,
+                'credential_id': credential.id,
+            }
+        return {
+            'identity_id': None,
+            'username': self.username,
+            'credential_type': 'ssh_key',
+            'credential_id': None,
+        }
+
+    def get_connection_profile(self, protocol='ssh'):
+        binding = self.get_default_identity_binding(protocol=protocol)
+        metadata = self._connection_metadata(binding)
+        if binding:
+            secret = binding.identity.credential.reveal_secret()
+        else:
+            secret = self.pkey or AppSetting.get('private_key')
+        metadata['secret'] = secret
+        return metadata
+
+    def get_ssh(self, pkey=None, default_env=None, term=None):
+        if pkey is not None:
+            return SSH(self.hostname, self.port, self.username, pkey, default_env=default_env, term=term)
+        profile = self.get_connection_profile()
+        kwargs = {'default_env': default_env, 'term': term}
+        if profile['credential_type'] == 'password':
+            kwargs['password'] = profile['secret']
+        else:
+            kwargs['pkey'] = profile['secret']
+        return SSH(self.hostname, self.port, profile['username'], **kwargs)
 
     def to_view(self):
-        tmp = self.to_dict()
+        tmp = self.to_dict(excludes=('pkey',))
+        binding = self.get_default_identity_binding()
+        tmp['has_pkey'] = bool(self.pkey or binding)
+        tmp['credential_source'] = 'identity' if binding else ('host' if self.pkey else 'global')
         if hasattr(self, 'hostextend'):
             tmp.update(self.hostextend.to_view())
         tmp['group_ids'] = []

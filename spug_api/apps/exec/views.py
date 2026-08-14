@@ -68,7 +68,7 @@ class TaskView(View):
             Argument('params', type=dict, handler=json.dumps, default={})
         ).parse(request.body)
         if error is None:
-            if not has_host_perm(request.user, form.host_ids):
+            if not has_host_perm(request.user, form.host_ids, action='exec.run'):
                 return json_response(error='无权访问主机，请联系管理员')
             token, rds = uuid.uuid4().hex, get_redis_connection()
             form.host_ids.sort()
@@ -101,23 +101,23 @@ class TaskView(View):
             if form.cols and form.rows:
                 term = {'width': form.cols, 'height': form.rows}
             rds = get_redis_connection()
-            task = ExecHistory.objects.get(digest=form.token)
-            for host in Host.objects.filter(id__in=json.loads(task.host_ids)):
+            task = ExecHistory.objects.filter(digest=form.token, user=request.user).first()
+            if not task:
+                return json_response(error='未找到指定执行任务')
+            host_ids = json.loads(task.host_ids)
+            if not has_host_perm(request.user, host_ids, action='exec.run'):
+                return json_response(error='授权已失效，请联系管理员')
+            for host in Host.objects.filter(id__in=host_ids):
                 data = dict(
                     key=host.id,
-                    name=host.name,
+                    host_id=host.id,
+                    user_id=request.user.id,
                     token=task.digest,
                     interpreter=task.interpreter,
-                    hostname=host.hostname,
-                    port=host.port,
-                    username=host.username,
                     command=task.command,
-                    pkey=host.private_key,
                     params=json.loads(task.params),
                     term=term
                 )
                 rds.rpush(settings.EXEC_WORKER_KEY, json.dumps(data))
         return json_response(error=error)
-
-
 

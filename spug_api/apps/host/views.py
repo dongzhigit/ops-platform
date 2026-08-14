@@ -25,7 +25,7 @@ class HostView(View):
     def get(self, request):
         hosts = Host.objects.select_related('hostextend')
         if not request.user.is_supper:
-            hosts = hosts.filter(id__in=get_host_perms(request.user))
+            hosts = hosts.filter(id__in=get_host_perms(request.user, action='host.view'))
         hosts = {x.id: x.to_view() for x in hosts}
         for rel in Group.hosts.through.objects.filter(host_id__in=hosts.keys()):
             hosts[rel.host_id]['group_ids'].append(rel.group_id)
@@ -41,14 +41,27 @@ class HostView(View):
             Argument('hostname', handler=str.strip, help='请输入主机名或IP'),
             Argument('port', type=int, help='请输入SSH端口'),
             Argument('pkey', required=False),
+            Argument('clear_pkey', type=bool, default=False),
             Argument('desc', required=False),
             Argument('password', required=False),
         ).parse(request.body)
         if error is None:
-            if not _do_host_verify(form):
+            current_host = Host.objects.filter(pk=form.id).first() if form.id else None
+            if form.id and current_host is None:
+                return json_response(error='未找到指定主机')
+            current_binding = current_host.get_default_identity_binding() if current_host else None
+            if current_binding and (form.pkey or form.clear_pkey):
+                return json_response(error='该主机正在使用托管身份，请在资产凭据中心修改绑定')
+            connection_override = None
+            if current_host and not form.pkey and not form.clear_pkey:
+                connection_override = current_host.get_connection_profile()
+            if not _do_host_verify(form, connection_override=connection_override):
                 return json_response('auth fail')
 
             group_ids = form.pop('group_ids')
+            clear_pkey = form.pop('clear_pkey')
+            if current_host and not form.pkey and not clear_pkey:
+                form.pop('pkey')
             other = Host.objects.filter(name=form.name).first()
             if other and (not form.id or other.id != form.id):
                 return json_response(error=f'已存在的主机名称【{form.name}】')
@@ -192,7 +205,7 @@ def batch_valid(request):
     return json_response(error=error)
 
 
-def _do_host_verify(form):
+def _do_host_verify(form, connection_override=None):
     password = form.pop('password')
     if form.pkey:
         try:
@@ -203,6 +216,25 @@ def _do_host_verify(form):
             raise Exception('该主机不支持密钥认证，请参考官方文档，错误代码：E01')
         except AuthenticationException:
             raise Exception('上传的独立密钥认证失败，请检查该密钥是否能正常连接主机（推荐使用全局密钥）')
+        except socket.timeout:
+            raise Exception('连接主机超时，请检查网络')
+
+    if connection_override:
+        kwargs = {
+            'hostname': form.hostname,
+            'port': form.port,
+            'username': connection_override['username'],
+        }
+        if connection_override['credential_type'] == 'password':
+            kwargs['password'] = connection_override['secret']
+        else:
+            kwargs['pkey'] = connection_override['secret']
+        try:
+            with SSH(**kwargs) as ssh:
+                ssh.ping()
+            return True
+        except AuthenticationException:
+            raise Exception('托管身份认证失败，请检查绑定的凭据')
         except socket.timeout:
             raise Exception('连接主机超时，请检查网络')
 

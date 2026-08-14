@@ -16,6 +16,8 @@ https://docs.djangoproject.com/en/2.2/ref/settings/
 
 import os
 import re
+from django.core.exceptions import ImproperlyConfigured
+from .env_settings import load_security_settings
 
 # Build paths inside the project like this: os.path.join(BASE_DIR, ...)
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -23,8 +25,9 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/2.2/howto/deployment/checklist/
 
-# SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'vk0do47)egwzz!uk49%(y3s(fpx4+ha@ugt-hcv&%&d@hwr&p7'
+# Development-only defaults. Production values are enforced after loading
+# the optional overrides module at the bottom of this file.
+SECRET_KEY = 'development-only-change-me'
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
@@ -35,6 +38,7 @@ ALLOWED_HOSTS = ['127.0.0.1']
 
 INSTALLED_APPS = [
     'apps.account',
+    'apps.assets',
     'apps.host',
     'apps.setting',
     'apps.exec',
@@ -134,9 +138,33 @@ AUTHENTICATION_EXCLUDES = (
 )
 
 SPUG_VERSION = 'v3.4.0'
+OPS_PLATFORM_VERSION = os.environ.get('OPS_PLATFORM_VERSION', '0.1.0-alpha.1')
 
 # override default config
 try:
     from spug.overrides import *
 except ImportError:
     pass
+
+
+try:
+    _security = load_security_settings(
+        default_secret=SECRET_KEY,
+        default_debug=DEBUG,
+        default_allowed_hosts=ALLOWED_HOSTS,
+    )
+except ValueError as exc:
+    raise ImproperlyConfigured(str(exc))
+
+SPUG_ENV = _security['environment']
+SPUG_CREDENTIAL_MASTER_KEY = _security['credential_master_key']
+SPUG_CREDENTIAL_MASTER_KEYS = _security['credential_master_keys']
+SPUG_CREDENTIAL_PRIMARY_KEY_ID = _security['credential_primary_key_id']
+SECRET_KEY = _security['secret_key']
+DEBUG = _security['debug']
+ALLOWED_HOSTS = _security['allowed_hosts']
+CSRF_TRUSTED_ORIGINS = _security['csrf_trusted_origins']
+SESSION_COOKIE_SECURE = _security['secure_cookies']
+CSRF_COOKIE_SECURE = _security['secure_cookies']
+SECURE_SSL_REDIRECT = _security['ssl_redirect']
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')

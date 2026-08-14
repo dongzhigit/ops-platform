@@ -101,7 +101,7 @@ class SSHConsumer(BaseConsumer):
             self.ssh.close()
 
     def init(self):
-        if has_host_perm(self.user, self.id):
+        if has_host_perm(self.user, self.id, action='ssh.connect'):
             self.send(text_data='\r\n正在连接至主机 ...')
             host = Host.objects.filter(pk=self.id).first()
             if not host:

@@ -6,6 +6,7 @@ from django.db import close_old_connections, transaction
 from apps.host.models import Host
 from apps.schedule.models import History, Task
 from apps.schedule.utils import send_fail_notify
+from apps.account.utils import has_host_perm
 import subprocess
 import socket
 import time
@@ -54,7 +55,13 @@ def dispatch_job(host_id, interpreter, command):
 
 def schedule_worker_handler(job):
     history_id, host_id, interpreter, command = json.loads(job)
-    code, duration, out = dispatch_job(host_id, interpreter, command)
+    task_id = History.objects.filter(pk=history_id).values_list('task_id', flat=True).first()
+    task = Task.objects.select_related('created_by').filter(pk=task_id).first()
+    if str(host_id) != 'local' and (
+            not task or not has_host_perm(task.created_by, host_id, action='schedule.run')):
+        code, duration, out = 126, 0, 'authorization revoked before scheduled execution'
+    else:
+        code, duration, out = dispatch_job(host_id, interpreter, command)
 
     close_old_connections()
     with transaction.atomic():

@@ -11,6 +11,7 @@ from apps.deploy.models import DeployRequest
 from apps.app.models import Deploy, DeployExtend2
 from apps.repository.models import Repository
 from apps.deploy.utils import dispatch, Helper
+from apps.account.utils import has_host_perm
 from apps.host.models import Host
 from collections import defaultdict
 from threading import Thread
@@ -156,7 +157,10 @@ class RequestDetailView(View):
             return json_response(error='该申请单当前状态还不能执行发布')
 
         host_ids = req.fail_host_ids if form.mode == 'fail' else req.host_ids
-        hosts = Host.objects.filter(id__in=json.loads(host_ids))
+        host_ids = json.loads(host_ids)
+        if not has_host_perm(request.user, host_ids, action='deploy.run'):
+            return json_response(error='无权在目标主机执行发布，请联系管理员')
+        hosts = Host.objects.filter(id__in=host_ids)
         message = f'{human_time()} 等待调度...        '
         outputs = {x.id: {'id': x.id, 'title': x.name, 'step': 0, 'data': message} for x in hosts}
         req.status = '2'
@@ -217,6 +221,8 @@ def post_request_ext1(request):
         Argument('desc', required=False),
     ).parse(request.body)
     if error is None:
+        if not has_host_perm(request.user, form.host_ids, action='deploy.run'):
+            return json_response(error='无权在目标主机创建发布申请，请联系管理员')
         deploy = Deploy.objects.get(pk=form.deploy_id)
         form.spug_version = Repository.make_spug_version(deploy.id)
         if form.extra[0] == 'tag':
@@ -262,6 +268,8 @@ def post_request_ext1_rollback(request):
         Argument('desc', required=False),
     ).parse(request.body)
     if error is None:
+        if not has_host_perm(request.user, form.host_ids, action='deploy.run'):
+            return json_response(error='无权在目标主机创建回滚申请，请联系管理员')
         req = DeployRequest.objects.get(pk=form.pop('request_id'))
         requests = DeployRequest.objects.filter(deploy=req.deploy, status__in=('3', '-3'))
         versions = list({x.spug_version: 1 for x in requests}.keys())
@@ -299,6 +307,8 @@ def post_request_ext2(request):
         Argument('desc', required=False),
     ).parse(request.body)
     if error is None:
+        if not has_host_perm(request.user, form.host_ids, action='deploy.run'):
+            return json_response(error='无权在目标主机创建发布申请，请联系管理员')
         deploy = Deploy.objects.filter(pk=form.deploy_id).first()
         if not deploy:
             return json_response(error='未找到该发布配置')

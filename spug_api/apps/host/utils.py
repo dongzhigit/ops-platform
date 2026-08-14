@@ -273,6 +273,9 @@ def batch_sync_host(token, hosts, password=None):
 
 def _sync_host_extend(host, private_key=None, public_key=None, password=None, ssh=None):
     if not ssh:
+        if host.get_default_identity_binding():
+            with host.get_ssh() as ssh:
+                return _sync_host_extend(host, ssh=ssh)
         kwargs = host.to_dict(selects=('hostname', 'port', 'username'))
         with _get_ssh(kwargs, host.pkey, private_key, public_key, password) as ssh:
             return _sync_host_extend(host, ssh=ssh)

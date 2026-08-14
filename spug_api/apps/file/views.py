@@ -19,7 +19,7 @@ class FileView(View):
             Argument('path', help='参数错误')
         ).parse(request.GET)
         if error is None:
-            if not has_host_perm(request.user, form.id):
+            if not has_host_perm(request.user, form.id, action='file.read'):
                 return json_response(error='无权访问主机，请联系管理员')
             host = Host.objects.get(pk=form.id)
             if not host:
@@ -37,7 +37,7 @@ class ObjectView(View):
             Argument('file', help='请输入文件路径')
         ).parse(request.GET)
         if error is None:
-            if not has_host_perm(request.user, form.id):
+            if not has_host_perm(request.user, form.id, action='file.read'):
                 return json_response(error='无权访问主机，请联系管理员')
             host = Host.objects.filter(pk=form.id).first()
             if not host:
@@ -57,7 +57,7 @@ class ObjectView(View):
             Argument('path', help='参数错误'),
         ).parse(request.POST)
         if error is None:
-            if not has_host_perm(request.user, form.id):
+            if not has_host_perm(request.user, form.id, action='file.write'):
                 return json_response(error='无权访问主机，请联系管理员')
             file = request.FILES.get('file')
             if not file:
@@ -78,7 +78,7 @@ class ObjectView(View):
             Argument('file', help='请输入文件路径')
         ).parse(request.GET)
         if error is None:
-            if not has_host_perm(request.user, form.id):
+            if not has_host_perm(request.user, form.id, action='file.write'):
                 return json_response(error='无权访问主机，请联系管理员')
             host = Host.objects.get(pk=form.id)
             if not host:

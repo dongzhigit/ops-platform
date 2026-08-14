@@ -7,6 +7,7 @@ from django_redis import get_redis_connection
 from libs import json_response, JsonParser, Argument, human_datetime, auth
 from apps.monitor.models import Detection
 from apps.monitor.executors import dispatch
+from apps.account.utils import has_host_perm
 from apps.setting.utils import AppSetting
 from datetime import datetime
 import json
@@ -36,6 +37,9 @@ class DetectionView(View):
             Argument('notify_mode', type=list, help='请选择报警方式'),
         ).parse(request.body)
         if error is None:
+            if form.type in ('3', '4') and not has_host_perm(
+                    request.user, form.targets, action='monitor.run'):
+                return json_response(error='无权在目标主机创建监控任务，请联系管理员')
             if set(form.notify_mode).intersection(['1', '2', '6']):
                 if not AppSetting.get_default('spug_push_key'):
                     return json_response(error='报警方式微信、短信、电话需要配置推送服务（系统设置/推送服务设置），请配置后再启用该报警方式。')
@@ -68,10 +72,15 @@ class DetectionView(View):
             Argument('is_active', type=bool, required=False)
         ).parse(request.body, True)
         if error is None:
+            task = Detection.objects.filter(pk=form.id).first()
+            if not task:
+                return json_response(error='未找到指定监控任务')
+            if form.get('is_active') and task.type in ('3', '4') and not has_host_perm(
+                    request.user, json.loads(task.targets), action='monitor.run'):
+                return json_response(error='无权在目标主机启用监控任务，请联系管理员')
             Detection.objects.filter(pk=form.id).update(**form)
             if form.get('is_active') is not None:
                 if form.is_active:
-                    task = Detection.objects.filter(pk=form.id).first()
                     message = {'id': form.id, 'action': 'add'}
                     message.update(task.to_dict(selects=('targets', 'extra', 'rate', 'type', 'threshold', 'quiet')))
                 else:
@@ -102,6 +111,9 @@ def run_test(request):
         Argument('extra', required=False)
     ).parse(request.body)
     if error is None:
+        if form.type in ('3', '4') and not has_host_perm(
+                request.user, form.targets, action='monitor.run'):
+            return json_response(error='无权在目标主机执行监控测试，请联系管理员')
         is_success, message = dispatch(form.type, form.targets[0], form.extra)
         return json_response({'is_success': is_success, 'message': message})
     return json_response(error=error)

@@ -8,13 +8,15 @@ from django_redis import get_redis_connection
 from apps.exec.models import Transfer
 from apps.account.utils import has_host_perm
 from apps.host.models import Host
-from apps.setting.utils import AppSetting
 from libs import json_response, JsonParser, Argument, auth
 from libs.utils import str_decode, human_seconds_time
 from concurrent import futures
+from contextlib import contextmanager
 from threading import Thread
 import subprocess
 import tempfile
+import shlex
+import shutil
 import uuid
 import json
 import time
@@ -36,30 +38,44 @@ class TransferView(View):
             Argument('host_ids', type=list, filter=lambda x: len(x), help='请选择目标主机'),
         ).parse(data)
         if error is None:
-            if not has_host_perm(request.user, form.host_ids):
+            if not has_host_perm(request.user, form.host_ids, action='file.distribute'):
                 return json_response(error='无权访问主机，请联系管理员')
             host_id = None
             token = uuid.uuid4().hex
             base_dir = os.path.join(settings.TRANSFER_DIR, token)
             if form.host:
                 host_id, path = json.loads(form.host)
+                if not has_host_perm(request.user, host_id, action='file.distribute'):
+                    return json_response(error='无权读取源主机，请联系管理员')
                 if not path.strip('/'):
                     return json_response(error='请输入正确的数据源路径')
                 host = Host.objects.get(pk=host_id)
                 with host.get_ssh() as ssh:
-                    code, _ = ssh.exec_command_raw(f'[ -d {path} ]')
+                    code, _ = ssh.exec_command_raw('[ -d %s ]' % shlex.quote(path))
                     if code != 0:
                         return json_response(error='数据源路径必须为该主机上已存在的目录')
                 os.makedirs(base_dir)
-                with tempfile.NamedTemporaryFile(mode='w') as fp:
-                    fp.write(host.pkey or AppSetting.get('private_key'))
-                    fp.flush()
-                    target = f'{host.username}@{host.hostname}:{path}'
-                    command = f'sshfs -o ro -o ssh_command="ssh -p {host.port} -i {fp.name}" {target} {base_dir}'
-                    task = subprocess.run(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-                    if task.returncode != 0:
-                        os.system(f'umount -f {base_dir} &> /dev/null ; rm -rf {base_dir}')
-                        return json_response(error=task.stdout.decode())
+                with _ssh_transport(host) as (profile, ssh_options, env):
+                    target = f'{host.ssh_username}@{host.hostname}:{path}'
+                    command = ['sshfs', '-o', 'ro']
+                    if profile['credential_type'] == 'password':
+                        command.extend(['-o', 'password_stdin'])
+                    command.extend([
+                        '-o', 'ssh_command=%s' % _shell_join(['ssh'] + ssh_options),
+                        target,
+                        base_dir,
+                    ])
+                    stdin = (profile['secret'] + '\n').encode() if profile['credential_type'] == 'password' else None
+                    process = subprocess.run(
+                        command,
+                        input=stdin,
+                        env=env,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                    )
+                    if process.returncode != 0:
+                        shutil.rmtree(base_dir, ignore_errors=True)
+                        return json_response(error=process.stdout.decode())
             else:
                 os.makedirs(base_dir)
                 index = 0
@@ -88,7 +104,11 @@ class TransferView(View):
             Argument('token', help='参数错误')
         ).parse(request.body)
         if error is None:
-            task = Transfer.objects.get(digest=form.token)
+            task = Transfer.objects.filter(digest=form.token, user=request.user).first()
+            if not task:
+                return json_response(error='未找到指定分发任务')
+            if not has_host_perm(request.user, json.loads(task.host_ids), action='file.distribute'):
+                return json_response(error='授权已失效，请联系管理员')
             Thread(target=_dispatch_sync, args=(task,)).start()
         return json_response(error=error)
 
@@ -111,29 +131,31 @@ def _dispatch_sync(task):
                     json.dumps({'key': t.key, 'status': -1, 'data': f'\x1b[31mException: {exc}\x1b[0m'})
                 )
     if task.host_id:
-        command = f'umount -f {task.src_dir} && rm -rf {task.src_dir}'
-    else:
-        command = f'rm -rf {task.src_dir}'
-    subprocess.run(command, shell=True)
+        subprocess.run(['umount', '-f', task.src_dir], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    shutil.rmtree(task.src_dir, ignore_errors=True)
     close_old_connections()
 
 
 def _do_sync(rds, task, host):
     token = task.digest
     rds.publish(token, json.dumps({'key': host.id, 'data': '\r\n\x1b[36m### Executing ...\x1b[0m\r\n'}))
-    with tempfile.NamedTemporaryFile(mode='w') as fp:
-        fp.write(host.pkey or AppSetting.get('private_key'))
-        fp.write('\n')
-        fp.flush()
-
+    with _ssh_transport(host) as (profile, ssh_options, env):
         flag = time.time()
-        options = '-azv --progress' if task.host_id else '-rzv --progress'
-        argument = f'{task.src_dir}/ {host.username}@{host.hostname}:{task.dst_dir}'
-        command = f'rsync {options} -h -e "ssh -p {host.port} -o StrictHostKeyChecking=no -i {fp.name}" {argument}'
-        task = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        options = '-azv' if task.host_id else '-rzv'
+        remote_path = shlex.quote(task.dst_dir)
+        target = f'{host.ssh_username}@{host.hostname}:{remote_path}'
+        command = [
+            'rsync', options, '--progress', '-h',
+            '-e', _shell_join(['ssh'] + ssh_options),
+            task.src_dir.rstrip('/') + '/',
+            target,
+        ]
+        if profile['credential_type'] == 'password':
+            command = ['sshpass', '-e'] + command
+        process = subprocess.Popen(command, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         message = b''
         while True:
-            output = task.stdout.read(1)
+            output = process.stdout.read(1)
             if not output:
                 break
             if output in (b'\r', b'\n'):
@@ -149,8 +171,35 @@ def _do_sync(rds, task, host):
                 message = b''
             else:
                 message += output
-        status = task.wait()
+        status = process.wait()
         if status == 0:
             human_time = human_seconds_time(time.time() - flag)
             rds.publish(token, json.dumps({'key': host.id, 'data': f'\r\n\x1b[32m** 分发完成，总耗时：{human_time} **\x1b[0m'}))
-        rds.publish(token, json.dumps({'key': host.id, 'status': task.wait()}))
+        rds.publish(token, json.dumps({'key': host.id, 'status': status}))
+
+
+def _shell_join(arguments):
+    return ' '.join(shlex.quote(str(item)) for item in arguments)
+
+
+@contextmanager
+def _ssh_transport(host):
+    profile = host.get_connection_profile()
+    options = [
+        '-p', str(host.port),
+        '-o', 'StrictHostKeyChecking=no',
+        '-o', 'UserKnownHostsFile=/dev/null',
+    ]
+    environment = os.environ.copy()
+    if profile['credential_type'] == 'password':
+        environment['SSHPASS'] = profile['secret']
+        yield profile, options, environment
+        return
+    if profile['credential_type'] != 'ssh_key':
+        raise RuntimeError('文件分发仅支持 SSH 密钥或密码凭据')
+    with tempfile.NamedTemporaryFile(mode='w') as key_file:
+        key_file.write(profile['secret'])
+        key_file.write('\n')
+        key_file.flush()
+        key_options = options + ['-i', key_file.name, '-o', 'IdentitiesOnly=yes']
+        yield profile, key_options, environment

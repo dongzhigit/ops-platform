@@ -3,7 +3,6 @@
 __pycache__/
 /.idea/
 /db.sqlite3
-migrations/
 /access.log
 /repos/*
 /logs/*
