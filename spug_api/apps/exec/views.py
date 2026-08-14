@@ -8,6 +8,12 @@ from libs import json_response, JsonParser, Argument, human_datetime, auth
 from apps.exec.models import ExecTemplate, ExecHistory
 from apps.host.models import Host
 from apps.account.utils import has_host_perm
+from apps.audit.services import (
+    ApprovalError,
+    authorize_operation,
+    record_event,
+    verify_consumed_approval,
+)
 import uuid
 import json
 
@@ -65,17 +71,40 @@ class TaskView(View):
             Argument('command', help='请输入执行命令内容'),
             Argument('interpreter', default='sh'),
             Argument('template_id', type=int, required=False),
-            Argument('params', type=dict, handler=json.dumps, default={})
+            Argument('params', type=dict, handler=json.dumps, default={}),
+            Argument('approval_id', required=False),
         ).parse(request.body)
         if error is None:
             if not has_host_perm(request.user, form.host_ids, action='exec.run'):
                 return json_response(error='无权访问主机，请联系管理员')
-            token, rds = uuid.uuid4().hex, get_redis_connection()
+            token = uuid.uuid4().hex
             form.host_ids.sort()
             if form.template_id:
                 template = ExecTemplate.objects.filter(pk=form.template_id).first()
                 if not template or template.body != form.command:
                     form.template_id = None
+
+            approval_id = form.pop('approval_id')
+            payload = {
+                'host_ids': form.host_ids,
+                'command': form.command,
+                'interpreter': form.interpreter,
+                'template_id': form.template_id,
+                'params': json.loads(form.params),
+            }
+            try:
+                gate = authorize_operation(
+                    requester=request.user,
+                    action='exec.run',
+                    resource_type='host',
+                    resource_ids=form.host_ids,
+                    payload=payload,
+                    approval_id=approval_id,
+                    execution_ref=token,
+                    request=request,
+                )
+            except ApprovalError as exc:
+                return json_response(error=exc.message)
 
             ExecHistory.objects.create(
                 user=request.user,
@@ -84,7 +113,9 @@ class TaskView(View):
                 template_id=form.template_id,
                 command=form.command,
                 host_ids=json.dumps(form.host_ids),
-                params=form.params
+                params=form.params,
+                correlation_id=gate['correlation_id'],
+                approval_id=gate['approval_id'],
             )
             return json_response(token)
         return json_response(error=error)
@@ -107,6 +138,23 @@ class TaskView(View):
             host_ids = json.loads(task.host_ids)
             if not has_host_perm(request.user, host_ids, action='exec.run'):
                 return json_response(error='授权已失效，请联系管理员')
+            if not verify_consumed_approval(
+                    approval_id=task.approval_id,
+                    requester_id=request.user.id,
+                    correlation_id=task.correlation_id,
+                    action='exec.run',
+                    execution_ref=task.digest):
+                record_event(
+                    correlation_id=task.correlation_id,
+                    actor=request.user,
+                    action='exec.run',
+                    resource_type='host',
+                    resource_id=task.digest,
+                    result='denied',
+                    details={'reason': 'approval_invalid_at_dispatch', 'host_ids': host_ids},
+                    request=request,
+                )
+                return json_response(error='审批授权已失效，任务未执行')
             for host in Host.objects.filter(id__in=host_ids):
                 data = dict(
                     key=host.id,
@@ -116,8 +164,20 @@ class TaskView(View):
                     interpreter=task.interpreter,
                     command=task.command,
                     params=json.loads(task.params),
-                    term=term
+                    term=term,
+                    correlation_id=str(task.correlation_id),
+                    approval_id=str(task.approval_id) if task.approval_id else None,
+                    execution_ref=task.digest,
                 )
                 rds.rpush(settings.EXEC_WORKER_KEY, json.dumps(data))
+            record_event(
+                correlation_id=task.correlation_id,
+                actor=request.user,
+                action='exec.run',
+                resource_type='host',
+                resource_id=task.digest,
+                result='queued',
+                details={'host_ids': host_ids, 'target_count': len(host_ids)},
+                request=request,
+            )
         return json_response(error=error)
-

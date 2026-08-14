@@ -11,6 +11,8 @@ from django.db import connections
 from django.db.utils import DatabaseError
 from apps.schedule.models import Task, History
 from apps.schedule.builtin import auto_run_by_day, auto_run_by_minute
+from apps.account.utils import has_host_perm
+from apps.audit.services import record_event, verify_consumed_approval
 from django.conf import settings
 from libs import AttrDict, human_datetime
 import logging
@@ -63,6 +65,34 @@ class Scheduler:
         self.scheduler.add_job(auto_run_by_minute, 'interval', minutes=1)
 
     def _dispatch(self, task_id, interpreter, command, targets):
+        task = Task.objects.select_related('created_by').filter(pk=task_id).first()
+        host_ids = [item for item in targets if str(item) != 'local']
+        approval_valid = bool(task and task.approval_id and verify_consumed_approval(
+            approval_id=task.approval_id,
+            requester_id=task.created_by_id,
+            correlation_id=task.correlation_id,
+            action='schedule.run',
+            execution_ref=task.approval_execution_ref,
+        ))
+        host_authorized = bool(task) and has_host_perm(
+            task.created_by, host_ids, action='schedule.run'
+        )
+        local_authorized = 'local' not in [str(item) for item in targets] or (
+            task and task.created_by.is_supper
+        )
+        if not approval_valid or not host_authorized or not local_authorized:
+            if task:
+                record_event(
+                    correlation_id=task.correlation_id,
+                    actor=task.created_by,
+                    action='schedule.run',
+                    resource_type='schedule',
+                    resource_id=task.id,
+                    result='denied',
+                    details={'reason': 'authorization_or_approval_invalid_at_dispatch'},
+                )
+            connections.close_all()
+            return
         output = {x: None for x in targets}
         history = History.objects.create(
             task_id=task_id,
@@ -71,6 +101,15 @@ class Scheduler:
             output=json.dumps(output)
         )
         Task.objects.filter(pk=task_id).update(latest_id=history.id)
+        record_event(
+            correlation_id=task.correlation_id,
+            actor=task.created_by,
+            action='schedule.run',
+            resource_type='schedule',
+            resource_id=task.id,
+            result='queued',
+            details={'history_id': history.id, 'targets': targets},
+        )
         rds_cli = get_redis_connection()
         for t in targets:
             rds_cli.rpush(SCHEDULE_WORKER_KEY, json.dumps([history.id, t, interpreter, command]))

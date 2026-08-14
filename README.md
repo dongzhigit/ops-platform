@@ -8,10 +8,11 @@ Spug是面向中小型企业设计的轻量级无Agent的自动化运维平台�
 
 ## 二次开发版本
 
-当前仓库正在建设私有化智能运维平台，预发布版本为 `ops-v0.1.0-alpha.1`（基于 OpenSpug v3.4.0）。本版本已完成安全工程基线和 M1 资产凭据/身份/对象授权的第一条纵向链路，但尚未完成审批审计、RDP/VNC、完整可观测性、知识库和 AI 闭环。
+当前仓库正在建设私有化智能运维平台，开发中的预发布版本为 `ops-v0.1.0-alpha.2`（基于 OpenSpug v3.4.0）。本版本已完成安全工程基线、M1 资产凭据/身份/对象授权，以及高风险操作审批与防篡改审计的后端纵向链路；审批管理前端、RDP/VNC、完整可观测性、知识库和 AI 闭环尚未完成。
 
 - [建设蓝图](docs/OPS_PLATFORM_BLUEPRINT.md)
 - [M1 资产与授权说明](docs/M1_ASSET_ACCESS.md)
+- [M1 审批与审计说明](docs/M1_APPROVAL_AUDIT.md)
 - [安全验证基线](docs/SECURITY_BASELINE.md)
 - [私有化 Docker 部署](docs/docker/README.md)
 - [版本记录](CHANGELOG.md)

@@ -7,6 +7,7 @@ from spug.env_settings import env_bool, env_list, load_security_settings, valida
 
 MASTER_KEY = base64.b64encode(b'k' * 32).decode('ascii')
 ROTATED_KEY = base64.b64encode(b'r' * 32).decode('ascii')
+AUDIT_KEY = 'audit-signing-key-that-is-independent-and-long'
 
 
 class EnvSettingsTest(TestCase):
@@ -37,6 +38,7 @@ class EnvSettingsTest(TestCase):
             'SPUG_ENV': 'production',
             'SPUG_SECRET_KEY': 'a-production-secret-with-32-characters',
             'SPUG_CREDENTIAL_MASTER_KEY': MASTER_KEY,
+            'SPUG_AUDIT_SIGNING_KEY': AUDIT_KEY,
             'SPUG_ALLOWED_HOSTS': 'ops.example.com',
         }
 
@@ -65,6 +67,7 @@ class EnvSettingsTest(TestCase):
                 'SPUG_ENV': 'production',
                 'SPUG_SECRET_KEY': 'a-production-secret-with-32-characters',
                 'SPUG_CREDENTIAL_MASTER_KEY': MASTER_KEY,
+                'SPUG_AUDIT_SIGNING_KEY': AUDIT_KEY,
                 'SPUG_ALLOWED_HOSTS': 'ops.example.com,10.0.0.10',
                 'SPUG_CSRF_TRUSTED_ORIGINS': 'ops.example.com',
                 'SPUG_SSL_REDIRECT': 'yes',
@@ -116,6 +119,7 @@ class EnvSettingsTest(TestCase):
             'SPUG_ENV': 'production',
             'SPUG_SECRET_KEY': 'a-production-secret-with-32-characters',
             'SPUG_ALLOWED_HOSTS': 'ops.example.com',
+            'SPUG_AUDIT_SIGNING_KEY': AUDIT_KEY,
         }
         with self.assertRaisesRegex(ValueError, 'SPUG_CREDENTIAL_MASTER_KEY'):
             load_security_settings(
@@ -145,6 +149,7 @@ class EnvSettingsTest(TestCase):
                 'SPUG_ENV': 'production',
                 'SPUG_SECRET_KEY': 'a-production-secret-with-32-characters',
                 'SPUG_CREDENTIAL_MASTER_KEY': MASTER_KEY,
+                'SPUG_AUDIT_SIGNING_KEY': AUDIT_KEY,
                 'SPUG_CREDENTIAL_KEYRING': json.dumps({'v2': ROTATED_KEY}),
                 'SPUG_CREDENTIAL_PRIMARY_KEY_ID': 'v2',
                 'SPUG_ALLOWED_HOSTS': 'ops.example.com',
@@ -165,4 +170,26 @@ class EnvSettingsTest(TestCase):
                     'SPUG_CREDENTIAL_MASTER_KEY': MASTER_KEY,
                     'SPUG_CREDENTIAL_PRIMARY_KEY_ID': 'missing',
                 },
+            )
+
+    def test_production_requires_independent_audit_signing_key(self):
+        common = {
+            'SPUG_ENV': 'production',
+            'SPUG_SECRET_KEY': 'a-production-secret-with-32-characters',
+            'SPUG_CREDENTIAL_MASTER_KEY': MASTER_KEY,
+            'SPUG_ALLOWED_HOSTS': 'ops.example.com',
+        }
+        with self.assertRaisesRegex(ValueError, 'SPUG_AUDIT_SIGNING_KEY'):
+            load_security_settings(
+                default_secret='development-secret',
+                default_debug=True,
+                default_allowed_hosts=['127.0.0.1'],
+                environ=common,
+            )
+        with self.assertRaisesRegex(ValueError, 'independent'):
+            load_security_settings(
+                default_secret='development-secret',
+                default_debug=True,
+                default_allowed_hosts=['127.0.0.1'],
+                environ=dict(common, SPUG_AUDIT_SIGNING_KEY=common['SPUG_SECRET_KEY']),
             )

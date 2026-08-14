@@ -10,9 +10,11 @@ from apps.schedule.models import Task, History
 from apps.schedule.executors import dispatch_job
 from apps.host.models import Host
 from apps.account.utils import has_host_perm
+from apps.audit.services import ApprovalError, authorize_operation, record_event
 from django.conf import settings
 from libs import json_response, JsonParser, Argument, human_datetime, auth
 import json
+import uuid
 
 
 class Schedule(View):
@@ -35,11 +37,36 @@ class Schedule(View):
             Argument('trigger', filter=lambda x: x in dict(Task.TRIGGERS), help='请选择触发器类型'),
             Argument('trigger_args', help='请输入触发器参数'),
             Argument('desc', required=False),
+            Argument('approval_id', required=False),
         ).parse(request.body)
         if error is None:
             host_ids = [item for item in form.targets if str(item) != 'local']
             if not has_host_perm(request.user, host_ids, action='schedule.run'):
                 return json_response(error='无权在目标主机创建计划任务，请联系管理员')
+            approval_id = form.pop('approval_id')
+            payload = {
+                'host_ids': sorted(host_ids),
+                'targets': form.targets,
+                'name': form.name,
+                'interpreter': form.interpreter,
+                'command': form.command,
+                'trigger': form.trigger,
+                'trigger_args': form.trigger_args,
+            }
+            execution_ref = 'schedule-config:%s' % uuid.uuid4().hex
+            try:
+                gate = authorize_operation(
+                    requester=request.user,
+                    action='schedule.write',
+                    resource_type='host',
+                    resource_ids=form.targets,
+                    payload=payload,
+                    approval_id=approval_id,
+                    execution_ref=execution_ref,
+                    request=request,
+                )
+            except ApprovalError as exc:
+                return json_response(error=exc.message)
             form.targets = json.dumps(form.targets)
             form.rst_notify = json.dumps(form.rst_notify)
             if form.trigger == 'cron':
@@ -56,6 +83,9 @@ class Schedule(View):
                 Task.objects.filter(pk=form.id).update(
                     updated_at=human_datetime(),
                     updated_by=request.user,
+                    correlation_id=gate['correlation_id'],
+                    approval_id=gate['approval_id'],
+                    approval_execution_ref=execution_ref,
                     **form
                 )
                 task = Task.objects.filter(pk=form.id).first()
@@ -65,14 +95,31 @@ class Schedule(View):
                     rds_cli = get_redis_connection()
                     rds_cli.lpush(settings.SCHEDULE_KEY, json.dumps(form))
             else:
-                Task.objects.create(created_by=request.user, **form)
+                task = Task.objects.create(
+                    created_by=request.user,
+                    correlation_id=gate['correlation_id'],
+                    approval_id=gate['approval_id'],
+                    approval_execution_ref=execution_ref,
+                    **form
+                )
+            record_event(
+                correlation_id=gate['correlation_id'],
+                actor=request.user,
+                action='schedule.write',
+                resource_type='schedule',
+                resource_id=form.id or task.id,
+                result='succeeded',
+                details={'host_ids': host_ids, 'name': form.name, 'execution_ref': execution_ref},
+                request=request,
+            )
         return json_response(error=error)
 
     @auth('schedule.schedule.edit')
     def patch(self, request):
         form, error = JsonParser(
             Argument('id', type=int, help='请指定操作对象'),
-            Argument('is_active', type=bool, required=False)
+            Argument('is_active', type=bool, required=False),
+            Argument('approval_id', required=False),
         ).parse(request.body, True)
         if error is None:
             task = Task.objects.get(pk=form.id)
@@ -80,6 +127,34 @@ class Schedule(View):
             if form.get('is_active') and not has_host_perm(request.user, host_ids, action='schedule.run'):
                 return json_response(error='无权在目标主机启用计划任务，请联系管理员')
             if form.get('is_active') is not None:
+                gate = None
+                if form.is_active:
+                    payload = {
+                        'host_ids': sorted(host_ids),
+                        'task_id': task.id,
+                        'interpreter': task.interpreter,
+                        'command': task.command,
+                        'targets': json.loads(task.targets),
+                        'trigger': task.trigger,
+                        'trigger_args': task.trigger_args,
+                    }
+                    execution_ref = 'schedule-activate:%s:%s' % (task.id, uuid.uuid4().hex)
+                    try:
+                        gate = authorize_operation(
+                            requester=request.user,
+                            action='schedule.run',
+                            resource_type='host',
+                            resource_ids=json.loads(task.targets),
+                            payload=payload,
+                            approval_id=form.get('approval_id'),
+                            execution_ref=execution_ref,
+                            request=request,
+                        )
+                    except ApprovalError as exc:
+                        return json_response(error=exc.message)
+                    task.correlation_id = gate['correlation_id']
+                    task.approval_id = gate['approval_id']
+                    task.approval_execution_ref = execution_ref
                 task.is_active = form.is_active
                 task.latest_id = None
                 if form.is_active:
@@ -89,21 +164,61 @@ class Schedule(View):
                     message = {'id': form.id, 'action': 'remove'}
                 rds_cli = get_redis_connection()
                 rds_cli.lpush(settings.SCHEDULE_KEY, json.dumps(message))
+                record_event(
+                    correlation_id=gate['correlation_id'] if gate else task.correlation_id,
+                    actor=request.user,
+                    action='schedule.run',
+                    resource_type='schedule',
+                    resource_id=task.id,
+                    result='succeeded',
+                    details={'enabled': form.is_active, 'host_ids': host_ids},
+                    request=request,
+                )
             task.save()
         return json_response(error=error)
 
     @auth('schedule.schedule.del')
     def delete(self, request):
         form, error = JsonParser(
-            Argument('id', type=int, help='请指定操作对象')
+            Argument('id', type=int, help='请指定操作对象'),
+            Argument('approval_id', required=False),
         ).parse(request.GET)
         if error is None:
             task = Task.objects.filter(pk=form.id).first()
             if task:
                 if task.is_active:
                     return json_response(error='该任务在运行中，请先停止任务再尝试删除')
+                targets = json.loads(task.targets)
+                host_ids = [item for item in targets if str(item) != 'local']
+                if not has_host_perm(request.user, host_ids, action='schedule.run'):
+                    return json_response(error='无权删除该计划任务，请联系管理员')
+                payload = {'host_ids': sorted(host_ids), 'task_id': task.id, 'mode': 'delete'}
+                try:
+                    gate = authorize_operation(
+                        requester=request.user,
+                        action='schedule.write',
+                        resource_type='host',
+                        resource_ids=targets,
+                        payload=payload,
+                        approval_id=form.approval_id,
+                        execution_ref='schedule-delete:%s' % task.id,
+                        request=request,
+                    )
+                except ApprovalError as exc:
+                    return json_response(error=exc.message)
+                task_id = task.id
                 task.delete()
-                History.objects.filter(task_id=task.id).delete()
+                History.objects.filter(task_id=task_id).delete()
+                record_event(
+                    correlation_id=gate['correlation_id'],
+                    actor=request.user,
+                    action='schedule.write',
+                    resource_type='schedule',
+                    resource_id=task_id,
+                    result='succeeded',
+                    details={'mode': 'delete', 'host_ids': host_ids},
+                    request=request,
+                )
         return json_response(error=error)
 
 
@@ -129,6 +244,41 @@ class HistoryView(View):
         host_ids = [item for item in json.loads(task.targets) if str(item) != 'local']
         if not has_host_perm(request.user, host_ids, action='schedule.run'):
             return json_response(error='无权在目标主机执行计划任务，请联系管理员')
+        form, error = JsonParser(Argument('approval_id', required=False)).parse(request.body)
+        if error:
+            return json_response(error=error)
+        payload = {
+            'host_ids': sorted(host_ids),
+            'task_id': task.id,
+            'interpreter': task.interpreter,
+            'command': task.command,
+            'targets': json.loads(task.targets),
+            'mode': 'manual',
+        }
+        execution_ref = 'schedule-manual:%s:%s' % (task.id, uuid.uuid4().hex)
+        try:
+            gate = authorize_operation(
+                requester=request.user,
+                action='schedule.run',
+                resource_type='host',
+                resource_ids=json.loads(task.targets),
+                payload=payload,
+                approval_id=form.approval_id,
+                execution_ref=execution_ref,
+                request=request,
+            )
+        except ApprovalError as exc:
+            return json_response(error=exc.message)
+        record_event(
+            correlation_id=gate['correlation_id'],
+            actor=request.user,
+            action='schedule.run',
+            resource_type='schedule',
+            resource_id=task.id,
+            result='started',
+            details={'execution_ref': execution_ref, 'host_ids': host_ids, 'mode': 'manual'},
+            request=request,
+        )
         outputs, status = {}, 1
         for host_id in json.loads(task.targets):
             code, duration, out = dispatch_job(host_id, task.interpreter, task.command)
@@ -141,6 +291,16 @@ class HistoryView(View):
             status=status,
             run_time=human_datetime(),
             output=json.dumps(outputs)
+        )
+        record_event(
+            correlation_id=gate['correlation_id'],
+            actor=request.user,
+            action='schedule.run',
+            resource_type='schedule',
+            resource_id=task.id,
+            result='succeeded' if status == 1 else 'failed',
+            details={'execution_ref': execution_ref, 'history_id': history.id},
+            request=request,
         )
         return json_response(history.id)
 

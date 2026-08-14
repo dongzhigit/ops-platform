@@ -5,6 +5,7 @@ from django.db import models
 from libs import ModelMixin, human_datetime
 from apps.account.models import User
 import json
+import uuid
 
 
 class History(models.Model, ModelMixin):
@@ -46,6 +47,9 @@ class Task(models.Model, ModelMixin):
     desc = models.CharField(max_length=255, null=True)
     latest = models.ForeignKey(History, on_delete=models.PROTECT, null=True)
     rst_notify = models.CharField(max_length=255, null=True)
+    correlation_id = models.UUIDField(default=uuid.uuid4, db_index=True)
+    approval_id = models.UUIDField(null=True, blank=True, db_index=True)
+    approval_execution_ref = models.CharField(max_length=100, null=True, blank=True)
 
     created_at = models.CharField(max_length=20, default=human_datetime)
     created_by = models.ForeignKey(User, models.PROTECT, related_name='+')

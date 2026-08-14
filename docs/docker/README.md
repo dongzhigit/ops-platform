@@ -9,9 +9,10 @@ cd docs/docker
 cp .env.example .env
 openssl rand -base64 48
 openssl rand -base64 32
+openssl rand -base64 48
 ```
 
-将第一个值写入 `.env` 的 `SPUG_SECRET_KEY`，第二个值写入 `SPUG_CREDENTIAL_MASTER_KEY`。两个密钥必须独立生成，随后填写数据库口令、正式域名和 HTTPS 来源，然后执行：
+将三个独立生成的值依次写入 `.env` 的 `SPUG_SECRET_KEY`、`SPUG_CREDENTIAL_MASTER_KEY` 和 `SPUG_AUDIT_SIGNING_KEY`。随后填写数据库口令、正式域名和 HTTPS 来源，然后执行：
 
 ```bash
 docker compose config --quiet

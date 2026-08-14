@@ -38,6 +38,7 @@ ALLOWED_HOSTS = ['127.0.0.1']
 
 INSTALLED_APPS = [
     'apps.account',
+    'apps.audit',
     'apps.assets',
     'apps.host',
     'apps.setting',
@@ -138,7 +139,7 @@ AUTHENTICATION_EXCLUDES = (
 )
 
 SPUG_VERSION = 'v3.4.0'
-OPS_PLATFORM_VERSION = os.environ.get('OPS_PLATFORM_VERSION', '0.1.0-alpha.1')
+OPS_PLATFORM_VERSION = os.environ.get('OPS_PLATFORM_VERSION', '0.1.0-alpha.2')
 
 # override default config
 try:
@@ -160,6 +161,7 @@ SPUG_ENV = _security['environment']
 SPUG_CREDENTIAL_MASTER_KEY = _security['credential_master_key']
 SPUG_CREDENTIAL_MASTER_KEYS = _security['credential_master_keys']
 SPUG_CREDENTIAL_PRIMARY_KEY_ID = _security['credential_primary_key_id']
+SPUG_AUDIT_SIGNING_KEY = _security['audit_signing_key']
 SECRET_KEY = _security['secret_key']
 DEBUG = _security['debug']
 ALLOWED_HOSTS = _security['allowed_hosts']

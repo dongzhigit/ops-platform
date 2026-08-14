@@ -51,6 +51,11 @@ def development_master_key(secret_key):
     return base64.b64encode(hashlib.sha256(material).digest()).decode('ascii')
 
 
+def development_audit_signing_key(secret_key):
+    material = ('spug-development-audit-key:' + str(secret_key)).encode('utf-8')
+    return hashlib.sha256(material).hexdigest()
+
+
 def load_credential_keyring(environ, fallback_key):
     keyring = {'primary': fallback_key}
     raw = str(environ.get('SPUG_CREDENTIAL_KEYRING', '')).strip()
@@ -86,6 +91,7 @@ def load_security_settings(*, default_secret, default_debug, default_allowed_hos
     provided_secret = str(environ.get('SPUG_SECRET_KEY', '')).strip()
     secret_key = provided_secret or default_secret
     provided_master_key = str(environ.get('SPUG_CREDENTIAL_MASTER_KEY', '')).strip()
+    provided_audit_key = str(environ.get('SPUG_AUDIT_SIGNING_KEY', '')).strip()
     debug = env_bool('SPUG_DEBUG', default=False if is_production else default_debug, environ=environ)
     allowed_hosts = env_list('SPUG_ALLOWED_HOSTS', default_allowed_hosts, environ=environ)
 
@@ -102,6 +108,10 @@ def load_security_settings(*, default_secret, default_debug, default_allowed_hos
             raise ValueError('SPUG_ALLOWED_HOSTS cannot contain * in production')
         if not provided_master_key:
             raise ValueError('SPUG_CREDENTIAL_MASTER_KEY is required when SPUG_ENV=production')
+        if len(provided_audit_key) < 32:
+            raise ValueError('SPUG_AUDIT_SIGNING_KEY must contain at least 32 characters in production')
+        if provided_audit_key in (provided_secret, provided_master_key):
+            raise ValueError('SPUG_AUDIT_SIGNING_KEY must be independent from other production keys')
 
     fallback_master_key = (
         validate_master_key(provided_master_key)
@@ -121,6 +131,7 @@ def load_security_settings(*, default_secret, default_debug, default_allowed_hos
         'credential_master_key': credential_master_keys[credential_primary_key_id],
         'credential_master_keys': credential_master_keys,
         'credential_primary_key_id': credential_primary_key_id,
+        'audit_signing_key': provided_audit_key or development_audit_signing_key(secret_key),
         'csrf_trusted_origins': env_list('SPUG_CSRF_TRUSTED_ORIGINS', environ=environ),
         'secure_cookies': env_bool('SPUG_SECURE_COOKIES', default=is_production, environ=environ),
         'ssl_redirect': env_bool('SPUG_SSL_REDIRECT', default=False, environ=environ),

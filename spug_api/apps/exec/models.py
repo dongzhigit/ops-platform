@@ -5,6 +5,7 @@ from django.db import models
 from libs import ModelMixin, human_datetime
 from apps.account.models import User
 import json
+import uuid
 
 
 class ExecTemplate(models.Model, ModelMixin):
@@ -42,6 +43,8 @@ class ExecHistory(models.Model, ModelMixin):
     command = models.TextField()
     params = models.TextField(default='{}')
     host_ids = models.TextField()
+    correlation_id = models.UUIDField(default=uuid.uuid4, db_index=True)
+    approval_id = models.UUIDField(null=True, blank=True, db_index=True)
     updated_at = models.CharField(max_length=20, default=human_datetime)
 
     def to_view(self):
@@ -66,6 +69,8 @@ class Transfer(models.Model, ModelMixin):
     src_dir = models.CharField(max_length=255)
     dst_dir = models.CharField(max_length=255)
     host_ids = models.TextField()
+    correlation_id = models.UUIDField(default=uuid.uuid4, db_index=True)
+    approval_id = models.UUIDField(null=True, blank=True, db_index=True)
     updated_at = models.CharField(max_length=20, default=human_datetime)
 
     def to_view(self):

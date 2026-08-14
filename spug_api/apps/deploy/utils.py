@@ -11,8 +11,10 @@ from apps.repository.models import Repository
 from apps.repository.utils import dispatch as build_repository
 from apps.deploy.models import DeployRequest
 from apps.deploy.helper import Helper, SpugError
+from apps.audit.services import record_event
 from concurrent import futures
 from functools import partial
+import logging
 import json
 import uuid
 import os
@@ -69,6 +71,23 @@ def dispatch(req, fail_mode=False):
             repository=req.repository,
             fail_host_ids=json.dumps(req.fail_host_ids),
         )
+        try:
+            record_event(
+                correlation_id=req.correlation_id,
+                actor=req.do_by or req.created_by,
+                action='deploy.run',
+                resource_type='deploy',
+                resource_id=req.id,
+                result='succeeded' if req.status == '3' else 'failed',
+                details={
+                    'host_ids': req.host_ids,
+                    'fail_host_ids': req.fail_host_ids,
+                    'version': req.version,
+                    'status': req.status,
+                },
+            )
+        except Exception:
+            logging.exception('failed to append deploy audit event for request %s', req.id)
         helper.clear()
         Helper.send_deploy_notify(req)
 

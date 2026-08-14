@@ -12,6 +12,7 @@ from apps.app.models import Deploy, DeployExtend2
 from apps.repository.models import Repository
 from apps.deploy.utils import dispatch, Helper
 from apps.account.utils import has_host_perm
+from apps.audit.services import record_event
 from apps.host.models import Host
 from collections import defaultdict
 from threading import Thread
@@ -19,6 +20,24 @@ from datetime import datetime
 import subprocess
 import json
 import os
+
+
+def _record_deploy_request(request, req, mode='request'):
+    record_event(
+        correlation_id=req.correlation_id,
+        actor=request.user,
+        action='deploy.run',
+        resource_type='deploy',
+        resource_id=req.id,
+        result='requested' if req.status == '0' else 'approved',
+        details={
+            'mode': mode,
+            'host_ids': json.loads(req.host_ids),
+            'version': req.version,
+            'legacy_approval_enabled': req.status == '0',
+        },
+        request=request,
+    )
 
 
 class RequestView(View):
@@ -167,6 +186,16 @@ class RequestDetailView(View):
         req.do_at = human_datetime()
         req.do_by = request.user
         req.save()
+        record_event(
+            correlation_id=req.correlation_id,
+            actor=request.user,
+            action='deploy.run',
+            resource_type='deploy',
+            resource_id=req.id,
+            result='started',
+            details={'host_ids': host_ids, 'mode': form.mode, 'version': req.version},
+            request=request,
+        )
         Thread(target=dispatch, args=(req, form.mode == 'fail')).start()
         if req.is_quick_deploy:
             if req.repository_id:
@@ -199,11 +228,23 @@ class RequestDetailView(View):
                 return json_response(error='请输入驳回原因')
             if req.status != '0':
                 return json_response(error='该申请当前状态不允许审核')
+            if req.created_by_id == request.user.id:
+                return json_response(error='申请人与审批人不能是同一用户')
             req.approve_at = human_datetime()
             req.approve_by = request.user
             req.status = '1' if form.is_pass else '-1'
             req.reason = form.reason
             req.save()
+            record_event(
+                correlation_id=req.correlation_id,
+                actor=request.user,
+                action='deploy.run',
+                resource_type='deploy',
+                resource_id=req.id,
+                result='approved' if form.is_pass else 'rejected',
+                details={'reason': form.reason, 'version': req.version},
+                request=request,
+            )
             Thread(target=Helper.send_deploy_notify, args=(req, 'approve_rst')).start()
         return json_response(error=error)
 
@@ -256,6 +297,8 @@ def post_request_ext1(request):
             is_required_notify = deploy.is_audit
         if is_required_notify:
             Thread(target=Helper.send_deploy_notify, args=(req, 'approve_req')).start()
+        req.refresh_from_db()
+        _record_deploy_request(request, req, mode='create_or_update')
     return json_response(error=error)
 
 
@@ -290,6 +333,7 @@ def post_request_ext1_rollback(request):
         )
         if req.deploy.is_audit:
             Thread(target=Helper.send_deploy_notify, args=(new_req, 'approve_req')).start()
+        _record_deploy_request(request, new_req, mode='rollback')
     return json_response(error=error)
 
 
@@ -333,6 +377,8 @@ def post_request_ext2(request):
             is_required_notify = deploy.is_audit
         if is_required_notify:
             Thread(target=Helper.send_deploy_notify, args=(req, 'approve_req')).start()
+        req.refresh_from_db()
+        _record_deploy_request(request, req, mode='create_or_update')
     return json_response(error=error)
 
 

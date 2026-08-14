@@ -9,6 +9,7 @@ from apps.app.models import Deploy
 from apps.repository.models import Repository
 import json
 import os
+import uuid
 
 
 class DeployRequest(models.Model, ModelMixin):
@@ -38,6 +39,7 @@ class DeployRequest(models.Model, ModelMixin):
     spug_version = models.CharField(max_length=50, null=True)
     plan = models.DateTimeField(null=True)
     fail_host_ids = models.TextField(default='[]')
+    correlation_id = models.UUIDField(default=uuid.uuid4, db_index=True)
 
     created_at = models.CharField(max_length=20, default=human_datetime)
     created_by = models.ForeignKey(User, models.PROTECT, related_name='+')

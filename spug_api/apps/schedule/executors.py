@@ -7,6 +7,7 @@ from apps.host.models import Host
 from apps.schedule.models import History, Task
 from apps.schedule.utils import send_fail_notify
 from apps.account.utils import has_host_perm
+from apps.audit.services import record_event, verify_consumed_approval
 import subprocess
 import socket
 import time
@@ -57,11 +58,49 @@ def schedule_worker_handler(job):
     history_id, host_id, interpreter, command = json.loads(job)
     task_id = History.objects.filter(pk=history_id).values_list('task_id', flat=True).first()
     task = Task.objects.select_related('created_by').filter(pk=task_id).first()
-    if str(host_id) != 'local' and (
-            not task or not has_host_perm(task.created_by, host_id, action='schedule.run')):
+    approval_valid = bool(task and task.approval_id and verify_consumed_approval(
+        approval_id=task.approval_id,
+        requester_id=task.created_by_id,
+        correlation_id=task.correlation_id,
+        action='schedule.run',
+        execution_ref=task.approval_execution_ref,
+    ))
+    host_authorized = bool(task) and (
+        str(host_id) == 'local' and task.created_by.is_supper or
+        str(host_id) != 'local' and has_host_perm(task.created_by, host_id, action='schedule.run')
+    )
+    if not approval_valid or not host_authorized:
         code, duration, out = 126, 0, 'authorization revoked before scheduled execution'
+        if task:
+            record_event(
+                correlation_id=task.correlation_id,
+                actor=task.created_by,
+                action='schedule.run',
+                resource_type='host',
+                resource_id=host_id,
+                result='denied',
+                details={'task_id': task.id, 'history_id': history_id},
+            )
     else:
+        record_event(
+            correlation_id=task.correlation_id,
+            actor=task.created_by,
+            action='schedule.run',
+            resource_type='host',
+            resource_id=host_id,
+            result='started',
+            details={'task_id': task.id, 'history_id': history_id},
+        )
         code, duration, out = dispatch_job(host_id, interpreter, command)
+        record_event(
+            correlation_id=task.correlation_id,
+            actor=task.created_by,
+            action='schedule.run',
+            resource_type='host',
+            resource_id=host_id,
+            result='succeeded' if code == 0 else 'failed',
+            details={'task_id': task.id, 'history_id': history_id, 'exit_code': code, 'duration': duration},
+        )
 
     close_old_connections()
     with transaction.atomic():
@@ -72,6 +111,6 @@ def schedule_worker_handler(job):
         if all(output.values()):
             history.status = '1' if sum(x[0] for x in output.values()) == 0 else '2'
         history.save()
-    if history.status == '2':
+    if history.status == '2' and task:
         task = Task.objects.get(pk=history.task_id)
         send_fail_notify(task)

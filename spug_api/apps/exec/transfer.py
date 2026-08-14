@@ -7,6 +7,12 @@ from django.db import close_old_connections
 from django_redis import get_redis_connection
 from apps.exec.models import Transfer
 from apps.account.utils import has_host_perm
+from apps.audit.services import (
+    ApprovalError,
+    authorize_operation,
+    record_event,
+    verify_consumed_approval,
+)
 from apps.host.models import Host
 from libs import json_response, JsonParser, Argument, auth
 from libs.utils import str_decode, human_seconds_time
@@ -36,15 +42,50 @@ class TransferView(View):
             Argument('host', required=False),
             Argument('dst_dir', help='请输入目标路径'),
             Argument('host_ids', type=list, filter=lambda x: len(x), help='请选择目标主机'),
+            Argument('approval_id', required=False),
         ).parse(data)
         if error is None:
+            form.host_ids.sort()
             if not has_host_perm(request.user, form.host_ids, action='file.distribute'):
                 return json_response(error='无权访问主机，请联系管理员')
             host_id = None
             token = uuid.uuid4().hex
+            source_path = None
+            if form.host:
+                try:
+                    host_id, source_path = json.loads(form.host)
+                except (TypeError, ValueError):
+                    return json_response(error='数据源参数错误')
+            uploaded_files = sorted(
+                [
+                    {'name': item.name, 'size': item.size}
+                    for item in request.FILES.values()
+                ],
+                key=lambda item: item['name'],
+            )
+            payload = {
+                'host_ids': form.host_ids,
+                'dst_dir': form.dst_dir,
+                'source_host_id': host_id,
+                'source_path': source_path,
+                'uploaded_files': uploaded_files,
+            }
+            try:
+                gate = authorize_operation(
+                    requester=request.user,
+                    action='file.distribute',
+                    resource_type='host',
+                    resource_ids=form.host_ids,
+                    payload=payload,
+                    approval_id=form.approval_id,
+                    execution_ref=token,
+                    request=request,
+                )
+            except ApprovalError as exc:
+                return json_response(error=exc.message)
             base_dir = os.path.join(settings.TRANSFER_DIR, token)
             if form.host:
-                host_id, path = json.loads(form.host)
+                path = source_path
                 if not has_host_perm(request.user, host_id, action='file.distribute'):
                     return json_response(error='无权读取源主机，请联系管理员')
                 if not path.strip('/'):
@@ -94,6 +135,8 @@ class TransferView(View):
                 src_dir=base_dir,
                 dst_dir=form.dst_dir,
                 host_ids=json.dumps(form.host_ids),
+                correlation_id=gate['correlation_id'],
+                approval_id=gate['approval_id'],
             )
             return json_response(token)
         return json_response(error=error)
@@ -109,16 +152,62 @@ class TransferView(View):
                 return json_response(error='未找到指定分发任务')
             if not has_host_perm(request.user, json.loads(task.host_ids), action='file.distribute'):
                 return json_response(error='授权已失效，请联系管理员')
+            if not verify_consumed_approval(
+                    approval_id=task.approval_id,
+                    requester_id=request.user.id,
+                    correlation_id=task.correlation_id,
+                    action='file.distribute',
+                    execution_ref=task.digest):
+                record_event(
+                    correlation_id=task.correlation_id,
+                    actor=request.user,
+                    action='file.distribute',
+                    resource_type='host',
+                    resource_id=task.digest,
+                    result='denied',
+                    details={'reason': 'approval_invalid_at_dispatch'},
+                    request=request,
+                )
+                return json_response(error='审批授权已失效，分发任务未执行')
             Thread(target=_dispatch_sync, args=(task,)).start()
+            record_event(
+                correlation_id=task.correlation_id,
+                actor=request.user,
+                action='file.distribute',
+                resource_type='host',
+                resource_id=task.digest,
+                result='queued',
+                details={'host_ids': json.loads(task.host_ids), 'dst_dir': task.dst_dir},
+                request=request,
+            )
         return json_response(error=error)
 
 
 def _dispatch_sync(task):
     rds = get_redis_connection()
+    host_ids = json.loads(task.host_ids)
+    if not has_host_perm(task.user, host_ids, action='file.distribute') or not verify_consumed_approval(
+            approval_id=task.approval_id,
+            requester_id=task.user_id,
+            correlation_id=task.correlation_id,
+            action='file.distribute',
+            execution_ref=task.digest):
+        record_event(
+            correlation_id=task.correlation_id,
+            actor=task.user,
+            action='file.distribute',
+            resource_type='host',
+            resource_id=task.digest,
+            result='denied',
+            details={'reason': 'authorization_or_approval_invalid_at_execution'},
+        )
+        shutil.rmtree(task.src_dir, ignore_errors=True)
+        close_old_connections()
+        return
     threads = []
     max_workers = max(10, os.cpu_count() * 5)
     with futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-        for host in Host.objects.filter(id__in=json.loads(task.host_ids)):
+        for host in Host.objects.filter(id__in=host_ids):
             t = executor.submit(_do_sync, rds, task, host)
             t.token = task.digest
             t.key = host.id
@@ -138,6 +227,15 @@ def _dispatch_sync(task):
 
 def _do_sync(rds, task, host):
     token = task.digest
+    record_event(
+        correlation_id=task.correlation_id,
+        actor=task.user,
+        action='file.distribute',
+        resource_type='host',
+        resource_id=host.id,
+        result='started',
+        details={'execution_ref': task.digest, 'dst_dir': task.dst_dir},
+    )
     rds.publish(token, json.dumps({'key': host.id, 'data': '\r\n\x1b[36m### Executing ...\x1b[0m\r\n'}))
     with _ssh_transport(host) as (profile, ssh_options, env):
         flag = time.time()
@@ -176,6 +274,15 @@ def _do_sync(rds, task, host):
             human_time = human_seconds_time(time.time() - flag)
             rds.publish(token, json.dumps({'key': host.id, 'data': f'\r\n\x1b[32m** 分发完成，总耗时：{human_time} **\x1b[0m'}))
         rds.publish(token, json.dumps({'key': host.id, 'status': status}))
+        record_event(
+            correlation_id=task.correlation_id,
+            actor=task.user,
+            action='file.distribute',
+            resource_type='host',
+            resource_id=host.id,
+            result='succeeded' if status == 0 else 'failed',
+            details={'execution_ref': task.digest, 'dst_dir': task.dst_dir, 'exit_code': status},
+        )
 
 
 def _shell_join(arguments):
