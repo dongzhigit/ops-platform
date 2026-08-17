@@ -8,14 +8,27 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from django.core.management import call_command
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import RequestFactory, TestCase
+from django.urls import resolve
 
 from apps.account.models import User
 from apps.audit.models import ApprovalRequest, AuditEvent
-from apps.file.models import FileTransfer
-from apps.file.services import MAX_CLEANUP_ATTEMPTS, cleanup_expired_file_transfers
+from apps.audit.services import create_approval, decide_approval
+from apps.file.models import FileTransfer, FileTransferBatch
+from apps.file.services import (
+    MAX_CLEANUP_ATTEMPTS,
+    cleanup_expired_file_transfers,
+)
 from apps.file.utils import remote_file_etag
-from apps.file.views import ObjectView, UploadSessionDetailView
+from apps.file.views import (
+    ObjectView,
+    UploadBatchDetailView,
+    UploadBatchView,
+    UploadChunkView,
+    UploadCompleteView,
+    UploadSessionDetailView,
+)
 from apps.host.models import Host
 from apps.schedule.scheduler import Scheduler
 from libs.ssh import SSH
@@ -74,6 +87,28 @@ class CleanupSSHStub:
         return self.outcome
 
 
+class CompleteSSHStub:
+    def __init__(self, digest):
+        self.digest = digest
+        self.created = []
+        self.replaced = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        return False
+
+    def create_empty_file(self, path):
+        self.created.append(path)
+
+    def remote_file_sha256(self, path):
+        return self.digest
+
+    def replace_file(self, source, target, overwrite=True):
+        self.replaced.append((source, target, overwrite))
+
+
 class FileFeatureTest(TestCase):
     def setUp(self):
         self.factory = RequestFactory()
@@ -85,6 +120,18 @@ class FileFeatureTest(TestCase):
             is_supper=True,
             is_active=True,
             access_token='file-admin' + ('x' * 22),
+            token_expired=0,
+            last_login='',
+            last_ip='127.0.0.1',
+        )
+        self.approver = User.objects.create(
+            username='file-approver',
+            nickname='file-approver',
+            password_hash='unused',
+            type='default',
+            is_supper=True,
+            is_active=True,
+            access_token='file-approver' + ('x' * 19),
             token_expired=0,
             last_login='',
             last_ip='127.0.0.1',
@@ -142,6 +189,84 @@ class FileFeatureTest(TestCase):
             cleanup_status=cleanup_status,
             cleanup_attempts=cleanup_attempts,
         )
+
+    def batch_files(self):
+        return [
+            {
+                'filename': 'b.txt',
+                'size': 0,
+                'sha256': hashlib.sha256(b'').hexdigest(),
+            },
+            {
+                'filename': 'a.txt',
+                'size': 0,
+                'sha256': hashlib.sha256(b'').hexdigest(),
+            },
+        ]
+
+    def batch_payload(self, *, files=None, max_concurrency=2):
+        files = files or self.batch_files()
+        return {
+            'host_ids': [self.host.id],
+            'path': '/tmp',
+            'files': sorted(files, key=lambda item: item['filename']),
+            'chunk_size': 256 * 1024,
+            'conflict_strategy': 'overwrite',
+            'max_concurrency': max_concurrency,
+        }
+
+    def approved_batch_request(self, *, files=None, max_concurrency=2):
+        files = files or self.batch_files()
+        payload = self.batch_payload(
+            files=files, max_concurrency=max_concurrency
+        )
+        approval = create_approval(
+            requester=self.user,
+            action='file.write',
+            resource_type='host',
+            resource_ids=[self.host.id],
+            payload=payload,
+            summary='批量上传测试文件',
+        )
+        decide_approval(
+            approval_id=approval.id,
+            approver=self.approver,
+            is_pass=True,
+        )
+        request = self.factory.post(
+            '/file/upload-batches/',
+            data=json.dumps({
+                'id': self.host.id,
+                'path': '/tmp',
+                'files': files,
+                'chunk_size': 256 * 1024,
+                'conflict_strategy': 'overwrite',
+                'max_concurrency': max_concurrency,
+                'approval_id': str(approval.id),
+            }),
+            content_type='application/json',
+        )
+        request.user = self.user
+        return approval, request
+
+    def create_batch(self, *, files=None, max_concurrency=2):
+        approval, request = self.approved_batch_request(
+            files=files, max_concurrency=max_concurrency
+        )
+        response = UploadBatchView.as_view()(request)
+        body = json.loads(response.content.decode('utf-8'))
+        self.assertFalse(body['error'])
+        return approval, FileTransferBatch.objects.get(pk=body['data']['id'])
+
+    def batch_action(self, batch, action, *, user=None):
+        request = self.factory.patch(
+            '/file/upload-batches/%s/' % batch.id,
+            data=json.dumps({'action': action}),
+            content_type='application/json',
+        )
+        request.user = user or self.user
+        response = UploadBatchDetailView.as_view()(request, batch_id=batch.id)
+        return json.loads(response.content.decode('utf-8'))
 
     def test_full_and_single_range_downloads(self):
         content = b'0123456789'
@@ -360,3 +485,362 @@ class FileFeatureTest(TestCase):
         ssh.sftp = SFTPStub(IOError(errno.EACCES, 'Permission denied'))
         with self.assertRaises(IOError):
             ssh.remove_file_if_exists('/tmp/protected.part')
+
+    def test_batch_creation_consumes_exact_approval_and_sorts_transfers(self):
+        approval, batch = self.create_batch()
+        approval.refresh_from_db()
+        self.assertEqual(approval.status, 'consumed')
+        self.assertEqual(approval.execution_ref, str(batch.id))
+        self.assertEqual(batch.file_count, 2)
+        self.assertEqual(batch.total_size, 0)
+        self.assertEqual(batch.max_concurrency, 2)
+        transfers = list(batch.transfers.order_by('sequence'))
+        self.assertEqual([item.filename for item in transfers], ['a.txt', 'b.txt'])
+        self.assertEqual([item.sequence for item in transfers], [0, 1])
+        self.assertTrue(all(item.approval_id == approval.id for item in transfers))
+        self.assertTrue(all(item.correlation_id == approval.correlation_id for item in transfers))
+
+    def test_batch_approval_rejects_file_digest_and_concurrency_tampering(self):
+        mutations = (
+            lambda data: data['files'].append({
+                'filename': 'extra.txt',
+                'size': 0,
+                'sha256': hashlib.sha256(b'').hexdigest(),
+            }),
+            lambda data: data['files'][0].update({'sha256': 'f' * 64}),
+            lambda data: data.update({'max_concurrency': 3}),
+        )
+        for mutate in mutations:
+            with self.subTest(mutation=mutate):
+                approval, request = self.approved_batch_request()
+                data = json.loads(request.body.decode('utf-8'))
+                mutate(data)
+                request = self.factory.post(
+                    '/file/upload-batches/',
+                    data=json.dumps(data),
+                    content_type='application/json',
+                )
+                request.user = self.user
+                response = UploadBatchView.as_view()(request)
+                body = json.loads(response.content.decode('utf-8'))
+                self.assertIn('参数不匹配', body['error'])
+                approval.refresh_from_db()
+                self.assertEqual(approval.status, 'approved')
+
+    def test_batch_rejects_duplicate_too_many_and_oversized_file_sets(self):
+        empty_digest = hashlib.sha256(b'').hexdigest()
+        invalid_sets = (
+            (
+                [
+                    {'filename': 'same', 'size': 0, 'sha256': empty_digest},
+                    {'filename': 'same', 'size': 0, 'sha256': empty_digest},
+                ],
+                '同名',
+            ),
+            (
+                [
+                    {'filename': '%02d.bin' % index, 'size': 0, 'sha256': empty_digest}
+                    for index in range(51)
+                ],
+                '1 到 50',
+            ),
+            (
+                [
+                    {
+                        'filename': '%02d.bin' % index,
+                        'size': 1024 ** 4,
+                        'sha256': empty_digest,
+                    }
+                    for index in range(6)
+                ],
+                '5 TiB',
+            ),
+        )
+        for files, expected in invalid_sets:
+            with self.subTest(expected=expected):
+                request = self.factory.post(
+                    '/file/upload-batches/',
+                    data=json.dumps({
+                        'id': self.host.id,
+                        'path': '/tmp',
+                        'files': files,
+                        'chunk_size': 256 * 1024,
+                        'conflict_strategy': 'overwrite',
+                        'max_concurrency': 2,
+                        'approval_id': str(uuid.uuid4()),
+                    }),
+                    content_type='application/json',
+                )
+                request.user = self.user
+                response = UploadBatchView.as_view()(request)
+                body = json.loads(response.content.decode('utf-8'))
+                self.assertIn(expected, body['error'])
+        self.assertEqual(FileTransferBatch.objects.count(), 0)
+
+    def test_batch_pause_blocks_chunks_and_resume_allows_them(self):
+        content = b'x' * (256 * 1024)
+        files = [{
+            'filename': 'chunk.bin',
+            'size': len(content),
+            'sha256': hashlib.sha256(content).hexdigest(),
+        }]
+        _, batch = self.create_batch(files=files)
+        transfer = batch.transfers.get()
+        paused = self.batch_action(batch, 'pause')
+        self.assertFalse(paused['error'])
+        batch.refresh_from_db()
+        self.assertEqual(batch.status, 'paused')
+
+        def chunk_request():
+            request = self.factory.post(
+                '/file/uploads/%s/chunk/' % transfer.id,
+                data={
+                    'offset': 0,
+                    'sha256': hashlib.sha256(content).hexdigest(),
+                    'chunk': SimpleUploadedFile('chunk', content),
+                },
+            )
+            request.user = self.user
+            return request
+
+        blocked = UploadChunkView.as_view()(
+            chunk_request(), upload_id=transfer.id
+        )
+        self.assertIn(
+            '已暂停或终止', json.loads(blocked.content.decode('utf-8'))['error']
+        )
+
+        resumed = self.batch_action(batch, 'resume')
+        self.assertFalse(resumed['error'])
+        batch.refresh_from_db()
+        self.assertEqual(batch.status, 'active')
+        with patch(
+            'apps.host.models.Host.get_ssh',
+            return_value=type('ChunkSSHStub', (), {
+                '__enter__': lambda value: value,
+                '__exit__': lambda value, *args: False,
+                'remote_file_size': lambda value, path: 0,
+                'write_file_chunk': lambda value, file_obj, path, offset: file_obj.size,
+            })(),
+        ):
+            accepted = UploadChunkView.as_view()(
+                chunk_request(), upload_id=transfer.id
+            )
+        self.assertFalse(json.loads(accepted.content.decode('utf-8'))['error'])
+        transfer.refresh_from_db()
+        self.assertEqual(transfer.offset, len(content))
+
+    def test_expired_chunk_request_persists_terminal_batch_state(self):
+        content = b'x' * (256 * 1024)
+        files = [{
+            'filename': 'expired.bin',
+            'size': len(content),
+            'sha256': hashlib.sha256(content).hexdigest(),
+        }]
+        _, batch = self.create_batch(files=files)
+        transfer = batch.transfers.get()
+        FileTransfer.objects.filter(pk=transfer.id).update(
+            expires_at=datetime.now() - timedelta(seconds=1)
+        )
+        request = self.factory.post(
+            '/file/uploads/%s/chunk/' % transfer.id,
+            data={
+                'offset': 0,
+                'sha256': hashlib.sha256(content).hexdigest(),
+                'chunk': SimpleUploadedFile('chunk', content),
+            },
+        )
+        request.user = self.user
+        response = UploadChunkView.as_view()(request, upload_id=transfer.id)
+        self.assertIn(
+            '已过期', json.loads(response.content.decode('utf-8'))['error']
+        )
+        transfer.refresh_from_db()
+        batch.refresh_from_db()
+        self.assertEqual(transfer.status, 'expired')
+        self.assertEqual(batch.status, 'failed')
+
+    def test_batch_cancel_marks_active_transfers_for_scheduled_cleanup(self):
+        _, batch = self.create_batch()
+        request = self.factory.delete('/file/upload-batches/%s/' % batch.id)
+        request.user = self.user
+        response = UploadBatchDetailView.as_view()(request, batch_id=batch.id)
+        body = json.loads(response.content.decode('utf-8'))
+        self.assertFalse(body['error'])
+        batch.refresh_from_db()
+        self.assertEqual(batch.status, 'cancelled')
+        self.assertFalse(batch.transfers.filter(status='active').exists())
+        self.assertEqual(
+            set(batch.transfers.values_list('cleanup_status', flat=True)),
+            {'pending'},
+        )
+        self.assertTrue(AuditEvent.objects.filter(
+            correlation_id=batch.correlation_id,
+            action='file.write',
+            result='cancelled',
+        ).exists())
+
+    def test_cancelling_only_child_refreshes_batch_to_failed(self):
+        _, batch = self.create_batch(files=[self.batch_files()[0]])
+        transfer = batch.transfers.get()
+        request = self.factory.delete('/file/uploads/%s/' % transfer.id)
+        request.user = self.user
+        with patch(
+            'apps.host.models.Host.get_ssh',
+            return_value=CleanupSSHStub(True),
+        ):
+            response = UploadSessionDetailView.as_view()(
+                request, upload_id=transfer.id
+            )
+        self.assertFalse(json.loads(response.content.decode('utf-8'))['error'])
+        batch.refresh_from_db()
+        self.assertEqual(batch.status, 'failed')
+        self.assertTrue(AuditEvent.objects.filter(
+            correlation_id=batch.correlation_id,
+            action='file.write',
+            result='failed',
+            details__contains='"batch_id"',
+        ).exists())
+
+    def test_batch_retry_resets_cleaned_failed_transfer(self):
+        _, batch = self.create_batch(files=[self.batch_files()[0]])
+        transfer = batch.transfers.get()
+        FileTransfer.objects.filter(pk=transfer.id).update(
+            status='failed', offset=8, actual_sha256='f' * 64,
+            error='checksum mismatch', cleanup_status='pending',
+        )
+        FileTransferBatch.objects.filter(pk=batch.id).update(
+            status='failed', error='child failed'
+        )
+        with patch(
+            'apps.host.models.Host.get_ssh',
+            return_value=CleanupSSHStub(True),
+        ):
+            body = self.batch_action(batch, 'retry')
+        self.assertFalse(body['error'])
+        transfer.refresh_from_db()
+        batch.refresh_from_db()
+        self.assertEqual(batch.status, 'active')
+        self.assertEqual(transfer.status, 'active')
+        self.assertEqual(transfer.offset, 0)
+        self.assertIsNone(transfer.actual_sha256)
+        self.assertIsNone(transfer.error)
+        self.assertEqual(transfer.cleanup_status, 'pending')
+        self.assertEqual(transfer.cleanup_attempts, 1)
+
+    def test_batch_retry_keeps_failure_when_remote_cleanup_fails(self):
+        for remote_error in (
+            PermissionError('permission denied'),
+            ConnectionError('connection lost'),
+        ):
+            with self.subTest(error=type(remote_error).__name__):
+                _, batch = self.create_batch(files=[self.batch_files()[0]])
+                transfer = batch.transfers.get()
+                FileTransfer.objects.filter(pk=transfer.id).update(
+                    status='failed', error='upload failed', cleanup_status='pending'
+                )
+                FileTransferBatch.objects.filter(pk=batch.id).update(
+                    status='failed', error='child failed'
+                )
+                with patch(
+                    'apps.host.models.Host.get_ssh',
+                    return_value=CleanupSSHStub(remote_error),
+                ):
+                    body = self.batch_action(batch, 'retry')
+                self.assertIn('尚未清理', body['error'])
+                transfer.refresh_from_db()
+                batch.refresh_from_db()
+                self.assertEqual(transfer.status, 'failed')
+                self.assertEqual(transfer.cleanup_status, 'failed')
+                self.assertEqual(transfer.cleanup_attempts, 1)
+                self.assertEqual(batch.status, 'failed')
+
+    def test_batch_transitions_to_completed_after_all_files_complete(self):
+        _, batch = self.create_batch()
+        digest = hashlib.sha256(b'').hexdigest()
+        for transfer in batch.transfers.order_by('sequence'):
+            request = self.factory.post(
+                '/file/uploads/%s/complete/' % transfer.id
+            )
+            request.user = self.user
+            with patch(
+                'apps.host.models.Host.get_ssh',
+                return_value=CompleteSSHStub(digest),
+            ):
+                response = UploadCompleteView.as_view()(
+                    request, upload_id=transfer.id
+                )
+            self.assertFalse(
+                json.loads(response.content.decode('utf-8'))['error']
+            )
+        batch.refresh_from_db()
+        self.assertEqual(batch.status, 'completed')
+        self.assertIsNotNone(batch.completed_at)
+        self.assertTrue(AuditEvent.objects.filter(
+            correlation_id=batch.correlation_id,
+            action='file.write',
+            result='succeeded',
+            details__contains='"batch_id"',
+        ).exists())
+
+    def test_batch_transitions_to_failed_when_final_child_fails(self):
+        _, batch = self.create_batch()
+        transfers = list(batch.transfers.order_by('sequence'))
+        FileTransfer.objects.filter(pk=transfers[0].id).update(
+            status='completed', actual_sha256=hashlib.sha256(b'').hexdigest(),
+            cleanup_status='removed', completed_at=datetime.now(),
+        )
+        request = self.factory.post(
+            '/file/uploads/%s/complete/' % transfers[1].id
+        )
+        request.user = self.user
+        with patch(
+            'apps.host.models.Host.get_ssh',
+            return_value=CompleteSSHStub('f' * 64),
+        ):
+            response = UploadCompleteView.as_view()(
+                request, upload_id=transfers[1].id
+            )
+        self.assertIn(
+            'SHA-256', json.loads(response.content.decode('utf-8'))['error']
+        )
+        batch.refresh_from_db()
+        self.assertEqual(batch.status, 'failed')
+        self.assertIsNone(batch.completed_at)
+        self.assertTrue(AuditEvent.objects.filter(
+            correlation_id=batch.correlation_id,
+            action='file.write',
+            result='failed',
+            details__contains='"batch_id"',
+        ).exists())
+
+    def test_batch_views_only_return_current_users_batches(self):
+        _, batch = self.create_batch()
+        list_request = self.factory.get('/file/upload-batches/')
+        list_request.user = self.approver
+        listed = UploadBatchView.as_view()(list_request)
+        listed_body = json.loads(listed.content.decode('utf-8'))
+        self.assertFalse(listed_body['error'])
+        self.assertEqual(listed_body['data'], [])
+
+        detail_request = self.factory.get(
+            '/file/upload-batches/%s/' % batch.id
+        )
+        detail_request.user = self.approver
+        detail = UploadBatchDetailView.as_view()(
+            detail_request, batch_id=batch.id
+        )
+        self.assertIn(
+            '未找到批量上传任务',
+            json.loads(detail.content.decode('utf-8'))['error'],
+        )
+
+    def test_batch_routes_resolve(self):
+        self.assertIs(
+            resolve('/file/upload-batches/').func.view_class,
+            UploadBatchView,
+        )
+        self.assertIs(
+            resolve('/file/upload-batches/%s/' % uuid.uuid4()).func.view_class,
+            UploadBatchDetailView,
+        )

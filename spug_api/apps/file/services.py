@@ -6,11 +6,50 @@ from django.db.models import Q
 
 from apps.audit.services import record_event
 
-from .models import FileTransfer
+from .models import FileTransfer, FileTransferBatch
 
 
 logger = logging.getLogger(__name__)
 MAX_CLEANUP_ATTEMPTS = 10
+
+
+def refresh_file_transfer_batch(batch_id, *, at=None):
+    if not batch_id:
+        return None, False
+    at = at or datetime.now()
+    with transaction.atomic():
+        batch = FileTransferBatch.objects.select_for_update().filter(
+            pk=batch_id
+        ).first()
+        if not batch:
+            return None, False
+        statuses = list(batch.transfers.values_list('status', flat=True))
+        if not statuses:
+            target_status = 'failed'
+            error = '批次不包含文件'
+        elif all(item == 'completed' for item in statuses):
+            target_status = 'completed'
+            error = None
+        elif any(item == 'active' for item in statuses):
+            target_status = (
+                batch.status if batch.status in ('paused', 'cancelled') else 'active'
+            )
+            error = None
+        elif batch.status == 'cancelled':
+            target_status = 'cancelled'
+            error = None
+        else:
+            target_status = 'failed'
+            error = '批次中存在失败、过期或取消的文件'
+        changed = batch.status != target_status or batch.error != error
+        if changed:
+            batch.status = target_status
+            batch.error = error
+            batch.completed_at = at if target_status == 'completed' else None
+            batch.save(update_fields=(
+                'status', 'error', 'completed_at', 'updated_at'
+            ))
+        return batch, changed
 
 
 def _candidate_query(at):
@@ -65,6 +104,7 @@ def cleanup_expired_file_transfers(*, execute=False, limit=100, at=None):
 
     for transfer_id in candidate_ids:
         event = None
+        batch_id = None
         with transaction.atomic():
             transfer = FileTransfer.objects.select_for_update().select_related(
                 'host', 'uploader'
@@ -90,6 +130,7 @@ def cleanup_expired_file_transfers(*, execute=False, limit=100, at=None):
                 'cleanup_attempted_at', 'cleanup_completed_at',
                 'cleanup_error', 'updated_at',
             ))
+            batch_id = transfer.batch_id
             summary[outcome] += 1
             event = {
                 'correlation_id': transfer.correlation_id,
@@ -103,6 +144,8 @@ def cleanup_expired_file_transfers(*, execute=False, limit=100, at=None):
                     'cleanup_attempt': transfer.cleanup_attempts,
                 },
             }
+        if event and batch_id:
+            refresh_file_transfer_batch(batch_id, at=at)
         if event:
             try:
                 record_event(

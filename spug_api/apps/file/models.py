@@ -10,6 +10,76 @@ def file_transfer_expiry():
     return datetime.now() + timedelta(hours=24)
 
 
+class FileTransferBatch(models.Model, ModelMixin):
+    STATUSES = (
+        ('active', '传输中'),
+        ('paused', '已暂停'),
+        ('completed', '已完成'),
+        ('failed', '失败'),
+        ('cancelled', '已取消'),
+    )
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    correlation_id = models.UUIDField(db_index=True, editable=False)
+    creator = models.ForeignKey(
+        'account.User', models.PROTECT, related_name='file_transfer_batches'
+    )
+    host = models.ForeignKey(
+        'host.Host', models.PROTECT, related_name='file_transfer_batches'
+    )
+    approval = models.OneToOneField(
+        'audit.ApprovalRequest', models.PROTECT,
+        related_name='file_transfer_batch'
+    )
+    directory = models.CharField(max_length=1024)
+    file_count = models.PositiveSmallIntegerField()
+    total_size = models.BigIntegerField()
+    max_concurrency = models.PositiveSmallIntegerField(default=2)
+    status = models.CharField(
+        max_length=16, choices=STATUSES, default='active', db_index=True
+    )
+    error = models.CharField(max_length=255, null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    def to_view(self, include_transfers=True):
+        data = {
+            'id': str(self.id),
+            'correlation_id': str(self.correlation_id),
+            'host_id': self.host_id,
+            'directory': self.directory,
+            'file_count': self.file_count,
+            'total_size': self.total_size,
+            'max_concurrency': self.max_concurrency,
+            'status': self.status,
+            'error': self.error,
+            'created_at': self.created_at,
+            'updated_at': self.updated_at,
+            'completed_at': self.completed_at,
+        }
+        if include_transfers:
+            transfers = getattr(self, '_view_transfers', None)
+            if transfers is None:
+                transfers = self.transfers.order_by('sequence', 'filename')
+            data['transfers'] = [
+                item.to_view() for item in transfers
+            ]
+        return data
+
+    def to_dict(self, *args, **kwargs):
+        return self.to_view()
+
+    class Meta:
+        db_table = 'file_transfer_batches'
+        ordering = ('-created_at',)
+        indexes = (
+            models.Index(
+                fields=('creator', 'status'), name='file_batch_creator_status_idx'
+            ),
+        )
+
+
 class FileTransfer(models.Model, ModelMixin):
     STATUSES = (
         ('active', '上传中'),
@@ -37,9 +107,14 @@ class FileTransfer(models.Model, ModelMixin):
     host = models.ForeignKey(
         'host.Host', models.PROTECT, related_name='file_transfers'
     )
-    approval = models.OneToOneField(
-        'audit.ApprovalRequest', models.PROTECT, related_name='file_transfer'
+    approval = models.ForeignKey(
+        'audit.ApprovalRequest', models.PROTECT, related_name='file_transfers'
     )
+    batch = models.ForeignKey(
+        FileTransferBatch, models.PROTECT, related_name='transfers',
+        null=True, blank=True
+    )
+    sequence = models.PositiveSmallIntegerField(default=0)
     directory = models.CharField(max_length=1024)
     filename = models.CharField(max_length=255)
     remote_path = models.CharField(max_length=1280)
@@ -82,6 +157,8 @@ class FileTransfer(models.Model, ModelMixin):
             'id': str(self.id),
             'correlation_id': str(self.correlation_id),
             'host_id': self.host_id,
+            'batch_id': str(self.batch_id) if self.batch_id else None,
+            'sequence': self.sequence,
             'directory': self.directory,
             'filename': self.filename,
             'size': self.size,
@@ -110,4 +187,6 @@ class FileTransfer(models.Model, ModelMixin):
         ordering = ('-created_at',)
         indexes = (
             models.Index(fields=('uploader', 'status'), name='file_uploader_status_idx'),
+            models.Index(fields=('batch', 'status'), name='file_batch_status_idx'),
         )
+        unique_together = (('batch', 'filename'),)
