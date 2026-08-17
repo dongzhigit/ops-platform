@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 from unittest.mock import patch
 
 from django.core.exceptions import ValidationError
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import RequestFactory, TestCase
 from django.urls import resolve
 
@@ -20,6 +21,7 @@ from apps.audit.services import (
 from apps.audit.views import OperationPreviewView
 from apps.exec.models import ExecHistory
 from apps.exec.views import TaskView
+from apps.file.views import ObjectView
 from apps.host.models import Host
 from apps.schedule.models import Task
 from apps.schedule.views import Schedule
@@ -247,6 +249,115 @@ class AuditApprovalTest(TestCase):
                 payload={'host_ids': [1], 'file': '/etc/app.conf'},
                 summary='删除配置文件',
             )
+
+    def test_file_upload_and_delete_use_exact_single_use_approvals(self):
+        host = Host.objects.create(
+            name='file-host', hostname='10.0.0.3', port=22, username='root',
+            created_by=self.requester,
+        )
+        content = b'checked-content'
+        upload_payload = {
+            'host_ids': [host.id],
+            'path': '/tmp',
+            'filename': 'app.conf',
+            'size': len(content),
+        }
+        denied_request = self.factory.post(
+            '/file/object/',
+            data={
+                'id': host.id,
+                'token': 'upload-denied',
+                'path': '/tmp',
+                'file': SimpleUploadedFile('app.conf', content),
+            },
+        )
+        denied_request.user = self.requester
+        denied = ObjectView.as_view()(denied_request)
+        self.assertIn('需要先创建并通过审批', json.loads(denied.content.decode('utf-8'))['error'])
+
+        upload_approval = create_approval(
+            requester=self.requester,
+            action='file.write',
+            resource_type='host',
+            resource_ids=[host.id],
+            payload=upload_payload,
+            summary='上传应用配置',
+        )
+        decide_approval(
+            approval_id=upload_approval.id,
+            approver=self.approver,
+            is_pass=True,
+        )
+        uploaded = []
+        removed = []
+
+        class RedisStub:
+            def publish(self, channel, value):
+                return 1
+
+        class SSHStub:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc_val, exc_tb):
+                return False
+
+            def put_file_by_fl(self, file_obj, path, callback=None):
+                uploaded.append((path, file_obj.read()))
+                if callback:
+                    callback(file_obj.size)
+
+            def remove_file(self, path):
+                removed.append(path)
+
+        upload_request = self.factory.post(
+            '/file/object/',
+            data={
+                'id': host.id,
+                'token': 'upload-approved',
+                'path': '/tmp',
+                'approval_id': str(upload_approval.id),
+                'file': SimpleUploadedFile('app.conf', content),
+            },
+        )
+        upload_request.user = self.requester
+        with patch('apps.file.views.get_redis_connection', return_value=RedisStub()), \
+                patch('apps.file.views.Host.get_ssh', return_value=SSHStub()):
+            uploaded_response = ObjectView.as_view()(upload_request)
+        self.assertFalse(json.loads(uploaded_response.content.decode('utf-8'))['error'])
+        self.assertEqual(uploaded, [('/tmp/app.conf', content)])
+        upload_approval.refresh_from_db()
+        self.assertEqual(upload_approval.status, 'consumed')
+
+        delete_payload = {'host_ids': [host.id], 'file': '/tmp/app.conf'}
+        delete_approval = create_approval(
+            requester=self.requester,
+            action='file.delete',
+            resource_type='host',
+            resource_ids=[host.id],
+            payload=delete_payload,
+            summary='删除旧应用配置',
+            rollback_plan='从配置仓库恢复 app.conf',
+        )
+        decide_approval(
+            approval_id=delete_approval.id,
+            approver=self.approver,
+            is_pass=True,
+        )
+        delete_request = self.factory.delete(
+            '/file/object/?id=%s&file=/tmp/app.conf&approval_id=%s' % (
+                host.id, delete_approval.id
+            )
+        )
+        delete_request.user = self.requester
+        with patch('apps.file.views.Host.get_ssh', return_value=SSHStub()):
+            deleted_response = ObjectView.as_view()(delete_request)
+        self.assertFalse(json.loads(deleted_response.content.decode('utf-8'))['error'])
+        self.assertEqual(removed, ['/tmp/app.conf'])
+        delete_approval.refresh_from_db()
+        self.assertEqual(delete_approval.status, 'consumed')
+        self.assertTrue(AuditEvent.objects.filter(action='file.write', result='succeeded').exists())
+        self.assertTrue(AuditEvent.objects.filter(action='file.delete', result='succeeded').exists())
 
     def test_audit_chain_redacts_secrets_and_rejects_mutation(self):
         correlation_id = create_approval(

@@ -10,14 +10,51 @@ export default function ApprovalGate(props) {
   const [summary, setSummary] = useState((defaultSummary || '').slice(0, 255));
   const [rollbackPlan, setRollbackPlan] = useState('');
   const [approvalId, setApprovalId] = useState();
+  const [requestSubmitted, setRequestSubmitted] = useState(false);
+  const [submittedApprovalId, setSubmittedApprovalId] = useState();
   const [submitting, setSubmitting] = useState(false);
+
+  function refreshPreview() {
+    setSubmitting(true)
+    setPreview()
+    setApprovalId()
+    return http.post('/api/v1/audit/preview/', operation)
+      .then(data => {
+        setPreview(data)
+        if (data.matching_approvals.length) {
+          setApprovalId(data.matching_approvals[0].id)
+          setRequestSubmitted(false)
+          setSubmittedApprovalId()
+        } else if (submittedApprovalId) {
+          return http.get('/api/v1/audit/approvals/').then(items => {
+            const approval = items.find(item => item.id === submittedApprovalId);
+            if (approval && approval.status !== 'pending') {
+              const labels = {
+                rejected: '已驳回',
+                cancelled: '已撤销',
+                expired: '已过期',
+                consumed: '已使用',
+              }
+              message.warning(`审批申请${labels[approval.status] || '状态已变化'}，请重新提交`)
+              setRequestSubmitted(false)
+              setSubmittedApprovalId()
+            }
+          })
+        }
+      })
+      .catch(onCancel)
+      .finally(() => setSubmitting(false))
+  }
 
   function execute(id) {
     setSubmitting(true)
     return Promise.resolve()
       .then(() => onExecute(id))
       .then(onComplete || onCancel)
-      .catch(() => setSubmitting(false))
+      .catch(() => {
+        if (!preview || !preview.approval_required) return onCancel()
+        refreshPreview()
+      })
   }
 
   useEffect(() => {
@@ -26,6 +63,8 @@ export default function ApprovalGate(props) {
     setSummary((defaultSummary || '').slice(0, 255))
     setRollbackPlan('')
     setApprovalId()
+    setRequestSubmitted(false)
+    setSubmittedApprovalId()
     http.post('/api/v1/audit/preview/', operation)
       .then(data => {
         if (!active) return
@@ -54,9 +93,11 @@ export default function ApprovalGate(props) {
       ...operation,
       summary: summary.trim(),
       rollback_plan: rollbackPlan.trim() || undefined,
-    }).then(() => {
+    }).then(data => {
       message.success('审批申请已提交，请等待另一名管理员审批')
-      onCancel()
+      setRequestSubmitted(true)
+      setSubmittedApprovalId(data.id)
+      setSubmitting(false)
     }).catch(() => setSubmitting(false))
   }
 
@@ -70,13 +111,14 @@ export default function ApprovalGate(props) {
       maskClosable={false}
       closable={!submitting}
       title="操作风险检查"
-      okText={hasApproval ? '使用审批并执行' : '提交审批申请'}
+      okText={hasApproval ? '使用审批并执行' : requestSubmitted ? '检查审批状态' : '提交审批申请'}
       okButtonProps={{
-        disabled: !preview || !preview.approval_required || (hasApproval ? !approvalId : !summary.trim())
+        disabled: !preview || !preview.approval_required ||
+          (hasApproval ? !approvalId : !requestSubmitted && !summary.trim())
       }}
       confirmLoading={submitting}
       onCancel={submitting ? undefined : onCancel}
-      onOk={() => hasApproval ? execute(approvalId) : createApproval()}>
+      onOk={() => hasApproval ? execute(approvalId) : requestSubmitted ? refreshPreview() : createApproval()}>
       {!preview ? (
         <div style={{padding: 48, textAlign: 'center'}}><Spin tip="正在进行服务端风险检查..."/></div>
       ) : !preview.approval_required ? (
@@ -109,6 +151,12 @@ export default function ApprovalGate(props) {
               </Form.Item>
               <Alert type="success" showIcon message="已找到与本次操作完全匹配的有效审批单"/>
             </Form>
+          ) : requestSubmitted ? (
+            <Alert
+              type="info"
+              showIcon
+              message="审批申请已提交"
+              description="请等待另一名管理员审批；批准后点击“检查审批状态”即可使用当前操作参数执行。"/>
           ) : (
             <Form layout="vertical">
               <Form.Item required label="变更摘要">

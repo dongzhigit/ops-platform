@@ -14,7 +14,7 @@ import {
   UploadOutlined,
   EditOutlined
 } from '@ant-design/icons';
-import { AuthButton, Action } from 'components';
+import { ApprovalGate, AuthButton, Action } from 'components';
 import { http, uniqueId, X_TOKEN } from 'libs';
 import lds from 'lodash';
 import styles from './index.module.less'
@@ -32,6 +32,7 @@ class FileManager extends React.Component {
       uploading: false,
       inputPath: null,
       uploadStatus: 'active',
+      approvalRequest: null,
       pwd: [],
       objects: [],
       percent: 0
@@ -48,6 +49,10 @@ class FileManager extends React.Component {
       this.setState({objects: [], pwd})
       this.fetchFiles(pwd)
     }
+  }
+
+  componentWillUnmount() {
+    if (this.socket) this.socket.close()
   }
 
   columns = [{
@@ -144,25 +149,57 @@ class FileManager extends React.Component {
   }
 
   handleUpload = () => {
-    this.input.click();
     this.input.onchange = e => {
-      this.setState({uploading: true, uploadStatus: 'active', percent: 0});
       const file = e.target['files'][0];
-      const formData = new FormData();
-      const token = uniqueId();
-      this._updatePercent(token);
-      formData.append('file', file);
-      formData.append('id', this.props.id);
-      formData.append('token', token);
-      formData.append('path', '/' + this.state.pwd.join('/'));
       this.input.value = '';
-      http.post('/api/file/object/', formData, {timeout: 600000, onUploadProgress: this._updateLocal})
-        .then(() => {
-          this.setState({uploadStatus: 'success'});
-          this.fetchFiles()
-        }, () => this.setState({uploadStatus: 'exception'}))
-        .finally(() => setTimeout(() => this.setState({uploading: false}), 2000))
+      if (!file) return
+      const hostId = Number(this.props.id);
+      const path = '/' + this.state.pwd.join('/');
+      const payload = {
+        host_ids: [hostId],
+        path,
+        filename: file.name,
+        size: file.size,
+      }
+      this.setState({
+        approvalRequest: {
+          operation: {
+            action: 'file.write',
+            resource_type: 'host',
+            resource_ids: [hostId],
+            payload,
+          },
+          file,
+          hostId,
+          path,
+          summary: `向主机 ${hostId} 的 ${path} 上传文件 ${file.name}`,
+        }
+      })
     }
+    this.input.click();
+  };
+
+  executeUpload = (request, approvalId) => {
+    this.setState({uploading: true, uploadStatus: 'active', percent: 0});
+    const formData = new FormData();
+    const token = uniqueId();
+    this._updatePercent(token);
+    formData.append('file', request.file);
+    formData.append('id', request.hostId);
+    formData.append('token', token);
+    formData.append('path', request.path);
+    formData.append('approval_id', approvalId);
+    return http.post('/api/file/object/', formData, {timeout: 600000, onUploadProgress: this._updateLocal})
+      .then(() => {
+        this.setState({uploadStatus: 'success'});
+        this.fetchFiles()
+      })
+      .catch(error => {
+        if (this.socket) this.socket.close()
+        this.setState({uploadStatus: 'exception'});
+        return Promise.reject(error)
+      })
+      .finally(() => setTimeout(() => this.setState({uploading: false}), 2000))
   };
 
   _updateLocal = (e) => {
@@ -188,7 +225,7 @@ class FileManager extends React.Component {
   };
 
   handleDownload = (name) => {
-    const file = `/${this.state.pwd.join('/')}/${name}`;
+    const file = `/${[...this.state.pwd, name].join('/')}`;
     const link = document.createElement('a');
     link.download = name;
     link.href = `/api/file/object/?id=${this.props.id}&file=${file}&x-token=${X_TOKEN}`;
@@ -199,21 +236,40 @@ class FileManager extends React.Component {
   };
 
   handleDelete = (name) => {
-    const file = `/${this.state.pwd.join('/')}/${name}`;
+    const file = `/${[...this.state.pwd, name].join('/')}`;
+    const hostId = Number(this.props.id);
     Modal.confirm({
       title: '删除文件确认',
       content: `确认删除文件：${file} ?`,
       onOk: () => {
-        return http.delete('/api/file/object/', {params: {id: this.props.id, file}})
-          .then(() => {
-            message.success('删除成功');
-            this.fetchFiles()
-          })
+        this.setState({
+          approvalRequest: {
+            operation: {
+              action: 'file.delete',
+              resource_type: 'host',
+              resource_ids: [hostId],
+              payload: {host_ids: [hostId], file},
+            },
+            hostId,
+            file,
+            summary: `删除主机 ${hostId} 文件 ${file}`,
+          }
+        })
       }
     })
   };
 
+  executeDelete = (request, approvalId) => {
+    return http.delete('/api/file/object/', {
+      params: {id: request.hostId, file: request.file, approval_id: approvalId}
+    }).then(() => {
+      message.success('删除成功');
+      this.fetchFiles()
+    })
+  };
+
   render() {
+    const {approvalRequest} = this.state;
     let objects = this.state.objects;
     if (!this.state.showDot) {
       objects = objects.filter(x => !x.name.startsWith('.'))
@@ -275,6 +331,15 @@ class FileManager extends React.Component {
           scroll={{y: scrollY}}
           style={{fontFamily: 'Source Code Pro, Courier New, Courier, Monaco, monospace, PingFang SC, Microsoft YaHei'}}
           dataSource={objects}/>
+        {approvalRequest && (
+          <ApprovalGate
+            operation={approvalRequest.operation}
+            defaultSummary={approvalRequest.summary}
+            onCancel={() => this.setState({approvalRequest: null})}
+            onExecute={approvalId => approvalRequest.operation.action === 'file.write'
+              ? this.executeUpload(approvalRequest, approvalId)
+              : this.executeDelete(approvalRequest, approvalId)}/>
+        )}
       </React.Fragment>
     )
   }
