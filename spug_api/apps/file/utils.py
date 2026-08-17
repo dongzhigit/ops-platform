@@ -1,7 +1,9 @@
 # Copyright: (c) OpenSpug Organization. https://github.com/openspug/spug
 # Copyright: (c) <spug.dev@gmail.com>
 # Released under the AGPL-3.0 License.
-from django.http import FileResponse
+from urllib.parse import quote
+import hashlib
+import re
 import stat
 import time
 import os
@@ -10,16 +12,91 @@ KB = 1024
 MB = 1024 * 1024
 GB = 1024 * 1024 * 1024
 TB = 1024 * 1024 * 1024 * 1024
+HTTP_RANGE_PATTERN = re.compile(r'^bytes=(\d*)-(\d*)$')
 
 
-class FileResponseAfter(FileResponse):
-    def __init__(self, callback, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.callback = callback
+class RemoteFileIterator:
+    def __init__(self, file_obj, offset, length, close_callback=None, block_size=1024 * 1024):
+        self.file_obj = file_obj
+        self.remaining = length
+        self.length = length
+        self.sent = 0
+        self.close_callback = close_callback
+        self.block_size = block_size
+        self.closed = False
+        self.file_obj.seek(offset)
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if self.remaining <= 0:
+            self.close()
+            raise StopIteration
+        try:
+            data = self.file_obj.read(min(self.block_size, self.remaining))
+        except Exception:
+            self.close()
+            raise
+        if not data:
+            self.close()
+            raise StopIteration
+        self.remaining -= len(data)
+        self.sent += len(data)
+        return data
 
     def close(self):
-        super().close()
-        self.callback()
+        if self.closed:
+            return
+        self.closed = True
+        try:
+            self.file_obj.close()
+        finally:
+            if self.close_callback:
+                self.close_callback(self.remaining == 0, self.sent)
+
+
+def parse_http_range(value, size):
+    if not value:
+        return None
+    match = HTTP_RANGE_PATTERN.match(value.strip())
+    if not match or size <= 0:
+        raise ValueError('invalid byte range')
+    first, last = match.groups()
+    if not first and not last:
+        raise ValueError('invalid byte range')
+    if not first:
+        suffix = int(last)
+        if suffix <= 0:
+            raise ValueError('invalid byte range')
+        start = max(size - suffix, 0)
+        end = size - 1
+    else:
+        start = int(first)
+        end = int(last) if last else size - 1
+        if start >= size or end < start:
+            raise ValueError('invalid byte range')
+        end = min(end, size - 1)
+    return start, end
+
+
+def remote_file_etag(host_id, path, file_stat):
+    material = '%s\0%s\0%s\0%s' % (
+        host_id,
+        path,
+        getattr(file_stat, 'st_size', 0),
+        getattr(file_stat, 'st_mtime', 0),
+    )
+    return '"%s"' % hashlib.sha256(material.encode('utf-8')).hexdigest()
+
+
+def attachment_header(filename):
+    try:
+        filename.encode('ascii')
+    except UnicodeEncodeError:
+        return "attachment; filename*=UTF-8''%s" % quote(filename, safe='')
+    filename = filename.replace('\\', '\\\\').replace('"', '\\"')
+    return 'attachment; filename="%s"' % filename
 
 
 def parse_mode(obj):

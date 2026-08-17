@@ -13,6 +13,7 @@ from apps.schedule.models import Task, History
 from apps.schedule.builtin import auto_run_by_day, auto_run_by_minute
 from apps.account.utils import has_host_perm
 from apps.audit.services import record_event, verify_consumed_approval
+from apps.file.services import cleanup_expired_file_transfers
 from django.conf import settings
 from libs import AttrDict, human_datetime
 import logging
@@ -63,6 +64,25 @@ class Scheduler:
     def _init_builtin_jobs(self):
         self.scheduler.add_job(auto_run_by_day, 'cron', hour=1, minute=20)
         self.scheduler.add_job(auto_run_by_minute, 'interval', minutes=1)
+        self.scheduler.add_job(
+            self._cleanup_file_transfers,
+            'interval',
+            minutes=15,
+            id='builtin:file-transfer-cleanup',
+            max_instances=1,
+            coalesce=True,
+        )
+
+    @staticmethod
+    def _cleanup_file_transfers():
+        try:
+            result = cleanup_expired_file_transfers(execute=True, limit=100)
+            if result['eligible']:
+                logging.warning('File transfer cleanup result: %s', result)
+        except Exception:
+            logging.exception('File transfer cleanup failed')
+        finally:
+            connections.close_all()
 
     def _dispatch(self, task_id, interpreter, command, targets):
         task = Task.objects.select_related('created_by').filter(pk=task_id).first()

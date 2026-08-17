@@ -352,7 +352,7 @@ class FileManager extends React.Component {
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
-    message.warning('即将开始下载，请勿重复点击。')
+    message.info('下载已开始；服务端支持 HTTP Range，可使用浏览器或下载工具断点续传。')
   };
 
   handleDelete = (name) => {

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.0-alpha.6 - 2026-08-17
+
+- SFTP 下载支持单段 HTTP Range、开放范围和后缀范围，并返回 `Accept-Ranges`、`Content-Range`、`ETag`、`Last-Modified`；支持 `If-Range`、HEAD、206 和 416 语义。
+- 下载保持限长流式读取，关闭 Nginx 代理缓冲；完整传输、客户端中断和远端文件打开失败分别写入成功或失败审计事件。
+- 上传会话增加临时文件清理状态、尝试次数和时间记录；取消上传时立即清理，过期、失败或取消会话由 Scheduler 每 15 分钟重试，单会话最多 10 次。
+- 增加默认只读的 `cleanup_file_transfers` 管理命令，支持显式 `--execute`，并区分已删除、文件不存在和权限/网络失败。
+- 增加 11 项 Range 下载、HEAD、中断审计、清理重试、管理命令和 Scheduler 回归测试，MariaDB 全量测试增至 47 项；真实 OpenSSH SFTP、Nginx 代理、空库迁移、镜像运行和 Gitleaks 验证通过。
+
 ## 0.1.0-alpha.5 - 2026-08-17
 
 - SSH 文件管理改用持久化上传会话，浏览器按 4 MiB 分片发送；网络或页面中断后，重新选择同一文件可在 24 小时内从服务端记录的偏移量续传。

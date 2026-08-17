@@ -265,8 +265,13 @@ class SSH:
         try:
             self._get_sftp().remove(remote_path)
             return True
-        except IOError:
-            return False
+        except IOError as exc:
+            missing = getattr(exc, 'errno', None) == errno.ENOENT or (
+                'no such file' in str(exc).lower()
+            )
+            if missing:
+                return False
+            raise
 
     def list_dir_attr(self, path):
         sftp = self._get_sftp()

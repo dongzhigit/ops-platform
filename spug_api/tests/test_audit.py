@@ -566,6 +566,8 @@ class AuditApprovalTest(TestCase):
         self.assertFalse(complete_body['error'])
         self.assertEqual(complete_body['data']['status'], 'completed')
         self.assertEqual(complete_body['data']['actual_sha256'], expected_sha256)
+        self.assertEqual(complete_body['data']['cleanup_status'], 'removed')
+        self.assertIsNotNone(complete_body['data']['cleanup_completed_at'])
         self.assertEqual(remote_files['/tmp/large.bin'], content)
         self.assertNotIn(transfer.temporary_path, remote_files)
         self.assertTrue(AuditEvent.objects.filter(

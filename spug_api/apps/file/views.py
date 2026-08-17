@@ -3,18 +3,29 @@
 # Released under the AGPL-3.0 License.
 from django.views.generic import View
 from django.db import transaction
+from django.http import HttpResponse, StreamingHttpResponse
+from django.utils.http import http_date
 from django_redis import get_redis_connection
 from apps.host.models import Host
 from apps.account.utils import has_host_perm
 from apps.audit.services import ApprovalError, authorize_operation, record_event
 from apps.file.models import FileTransfer
-from apps.file.utils import FileResponseAfter, fetch_dir_list
+from apps.file.services import (
+    MAX_CLEANUP_ATTEMPTS,
+    cleanup_transfer_temporary_file,
+)
+from apps.file.utils import (
+    RemoteFileIterator,
+    attachment_header,
+    fetch_dir_list,
+    parse_http_range,
+    remote_file_etag,
+)
 from libs import json_response, JsonParser, Argument, auth
 from functools import partial
 from datetime import datetime
 import hashlib
 import logging
-import os
 import posixpath
 import re
 import uuid
@@ -90,22 +101,137 @@ class FileView(View):
 class ObjectView(View):
     @auth('host.console.list')
     def get(self, request):
+        return self._download(request, include_body=True)
+
+    @auth('host.console.list')
+    def head(self, request):
+        return self._download(request, include_body=False)
+
+    def _download(self, request, include_body):
         form, error = JsonParser(
             Argument('id', type=int, help='参数错误'),
             Argument('file', help='请输入文件路径')
         ).parse(request.GET)
-        if error is None:
-            if not has_host_perm(request.user, form.id, action='file.read'):
-                return json_response(error='无权访问主机，请联系管理员')
-            host = Host.objects.filter(pk=form.id).first()
-            if not host:
-                return json_response(error='未找到指定主机')
-            filename = os.path.basename(form.file)
-            ssh_cli = host.get_ssh().get_client()
-            sftp = ssh_cli.open_sftp()
-            f = sftp.open(form.file)
-            return FileResponseAfter(ssh_cli.close, f, as_attachment=True, filename=filename)
-        return json_response(error=error)
+        if error:
+            return json_response(error=error)
+        if not has_host_perm(request.user, form.id, action='file.read'):
+            return json_response(error='无权访问主机，请联系管理员')
+        host = Host.objects.filter(pk=form.id).first()
+        if not host:
+            return json_response(error='未找到指定主机')
+
+        filename = posixpath.basename(form.file)
+        ssh_cli = host.get_ssh().get_client()
+        sftp = ssh_cli.open_sftp()
+        try:
+            file_stat = sftp.stat(form.file)
+            size = int(file_stat.st_size or 0)
+            etag = remote_file_etag(host.id, form.file, file_stat)
+            last_modified = http_date(file_stat.st_mtime) if file_stat.st_mtime else None
+            range_header = request.META.get('HTTP_RANGE')
+            if_range = request.META.get('HTTP_IF_RANGE')
+            if range_header and if_range and if_range not in (etag, last_modified):
+                range_header = None
+            try:
+                byte_range = parse_http_range(range_header, size)
+            except ValueError:
+                ssh_cli.close()
+                response = HttpResponse(status=416)
+                response['Accept-Ranges'] = 'bytes'
+                response['Content-Range'] = 'bytes */%s' % size
+                response['Cache-Control'] = 'no-store'
+                return response
+
+            if byte_range:
+                start, end = byte_range
+                status = 206
+            else:
+                start, end = 0, max(size - 1, -1)
+                status = 200
+            length = max(end - start + 1, 0)
+            correlation_id = uuid.uuid4()
+            record_event(
+                correlation_id=correlation_id,
+                actor=request.user,
+                action='file.read',
+                resource_type='host',
+                resource_id=host.id,
+                result='started',
+                details={
+                    'file': form.file,
+                    'size': size,
+                    'range_start': start,
+                    'range_end': end,
+                    'head_only': not include_body,
+                },
+                request=request,
+            )
+
+            def finish_download(completed, bytes_sent):
+                try:
+                    ssh_cli.close()
+                except Exception:
+                    logger.exception('failed to close SFTP download connection')
+                try:
+                    record_event(
+                        correlation_id=correlation_id,
+                        actor=request.user,
+                        action='file.read',
+                        resource_type='host',
+                        resource_id=host.id,
+                        result='succeeded' if completed else 'failed',
+                        details={
+                            'file': form.file,
+                            'size': size,
+                            'range_start': start,
+                            'range_end': end,
+                            'bytes_sent': bytes_sent,
+                            'head_only': not include_body,
+                        },
+                        request=request,
+                    )
+                except Exception:
+                    logger.exception('failed to record SFTP download audit event')
+
+            if include_body:
+                remote_file = None
+                try:
+                    remote_file = sftp.open(form.file, 'rb')
+                    iterator = RemoteFileIterator(
+                        remote_file, start, length, close_callback=finish_download
+                    )
+                except Exception:
+                    if remote_file is not None:
+                        try:
+                            remote_file.close()
+                        except Exception:
+                            logger.exception('failed to close remote SFTP file')
+                    finish_download(False, 0)
+                    raise
+                response = StreamingHttpResponse(
+                    iterator, status=status, content_type='application/octet-stream'
+                )
+            else:
+                finish_download(True, 0)
+                response = HttpResponse(status=status, content_type='application/octet-stream')
+
+            response['Accept-Ranges'] = 'bytes'
+            response['Content-Length'] = str(length)
+            response['Content-Disposition'] = attachment_header(filename)
+            response['ETag'] = etag
+            response['Cache-Control'] = 'no-store'
+            response['X-Accel-Buffering'] = 'no'
+            if last_modified:
+                response['Last-Modified'] = last_modified
+            if status == 206:
+                response['Content-Range'] = 'bytes %s-%s/%s' % (start, end, size)
+            return response
+        except Exception:
+            try:
+                ssh_cli.close()
+            except Exception:
+                logger.exception('failed to close SFTP download connection')
+            raise
 
     @auth('host.console.upload')
     def post(self, request):
@@ -372,17 +498,21 @@ class UploadSessionDetailView(View):
                 )
                 if transfer.status == 'completed':
                     raise FileTransferError('已完成的上传不能取消')
-                cleanup_succeeded = False
-                try:
-                    with transfer.host.get_ssh() as ssh:
-                        cleanup_succeeded = ssh.remove_file_if_exists(
-                            transfer.temporary_path
-                        )
-                except Exception:
-                    logger.exception('failed to remove cancelled SFTP upload part')
+                if transfer.status == 'cancelled' and (
+                    transfer.cleanup_status in ('removed', 'missing') or
+                    transfer.cleanup_attempts >= MAX_CLEANUP_ATTEMPTS
+                ):
+                    return json_response(transfer.to_view())
+                cleanup_outcome = cleanup_transfer_temporary_file(transfer)
+                cleanup_attempted = cleanup_outcome is not None
+                cleanup_outcome = cleanup_outcome or transfer.cleanup_status
                 transfer.status = 'cancelled'
                 transfer.error = None
-                transfer.save(update_fields=('status', 'error', 'updated_at'))
+                transfer.save(update_fields=(
+                    'status', 'error', 'cleanup_status', 'cleanup_attempts',
+                    'cleanup_attempted_at', 'cleanup_completed_at',
+                    'cleanup_error', 'updated_at',
+                ))
             record_event(
                 correlation_id=transfer.correlation_id,
                 actor=request.user,
@@ -393,10 +523,31 @@ class UploadSessionDetailView(View):
                 details={
                     'upload_id': str(transfer.id),
                     'filename': transfer.filename,
-                    'temporary_file_removed': cleanup_succeeded,
+                    'temporary_file_removed': cleanup_outcome == 'removed',
+                    'cleanup_outcome': cleanup_outcome,
                 },
                 request=request,
             )
+            if cleanup_attempted:
+                try:
+                    record_event(
+                        correlation_id=transfer.correlation_id,
+                        actor=request.user,
+                        action='file.cleanup',
+                        resource_type='host',
+                        resource_id=transfer.host_id,
+                        result='failed' if cleanup_outcome == 'failed' else 'succeeded',
+                        details={
+                            'upload_id': str(transfer.id),
+                            'filename': transfer.filename,
+                            'cleanup_outcome': cleanup_outcome,
+                            'cleanup_attempt': transfer.cleanup_attempts,
+                            'trigger': 'upload_cancelled',
+                        },
+                        request=request,
+                    )
+                except Exception:
+                    logger.exception('failed to record cancelled upload cleanup audit event')
             return json_response(transfer.to_view())
         except FileTransferError as exc:
             return json_response(error=str(exc))
@@ -534,9 +685,12 @@ class UploadCompleteView(View):
                             transfer.actual_sha256 = actual_sha256
                             transfer.error = None
                             transfer.completed_at = datetime.now()
+                            transfer.cleanup_status = 'removed'
+                            transfer.cleanup_completed_at = transfer.completed_at
                             transfer.save(update_fields=(
                                 'status', 'actual_sha256', 'error',
-                                'completed_at', 'updated_at'
+                                'completed_at', 'cleanup_status',
+                                'cleanup_completed_at', 'updated_at'
                             ))
                 except FileTransferError:
                     raise

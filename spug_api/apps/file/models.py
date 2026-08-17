@@ -22,6 +22,12 @@ class FileTransfer(models.Model, ModelMixin):
         ('overwrite', '覆盖'),
         ('reject', '拒绝'),
     )
+    CLEANUP_STATUSES = (
+        ('pending', '待清理'),
+        ('removed', '已删除'),
+        ('missing', '文件不存在'),
+        ('failed', '清理失败'),
+    )
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     correlation_id = models.UUIDField(db_index=True, editable=False)
@@ -54,6 +60,13 @@ class FileTransfer(models.Model, ModelMixin):
     updated_at = models.DateTimeField(auto_now=True)
     expires_at = models.DateTimeField(default=file_transfer_expiry, db_index=True)
     completed_at = models.DateTimeField(null=True, blank=True)
+    cleanup_status = models.CharField(
+        max_length=16, choices=CLEANUP_STATUSES, default='pending', db_index=True
+    )
+    cleanup_attempts = models.PositiveSmallIntegerField(default=0)
+    cleanup_attempted_at = models.DateTimeField(null=True, blank=True)
+    cleanup_completed_at = models.DateTimeField(null=True, blank=True)
+    cleanup_error = models.CharField(max_length=255, null=True, blank=True)
 
     def refresh_expiry_status(self, at=None):
         at = at or datetime.now()
@@ -83,6 +96,10 @@ class FileTransfer(models.Model, ModelMixin):
             'updated_at': self.updated_at,
             'expires_at': self.expires_at,
             'completed_at': self.completed_at,
+            'cleanup_status': self.cleanup_status,
+            'cleanup_attempts': self.cleanup_attempts,
+            'cleanup_attempted_at': self.cleanup_attempted_at,
+            'cleanup_completed_at': self.cleanup_completed_at,
         }
 
     def to_dict(self, *args, **kwargs):

@@ -2,6 +2,7 @@ export const ACTION_LABELS = {
   'exec.run': '批量执行命令',
   'file.read': '读取文件',
   'file.write': '写入文件',
+  'file.cleanup': '清理上传临时文件',
   'file.delete': '删除文件',
   'file.distribute': '文件分发',
   'schedule.write': '配置计划任务',
