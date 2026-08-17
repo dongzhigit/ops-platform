@@ -15,10 +15,22 @@ import {
   EditOutlined
 } from '@ant-design/icons';
 import { ApprovalGate, AuthButton, Action } from 'components';
-import { http, uniqueId, X_TOKEN } from 'libs';
+import { http, X_TOKEN } from 'libs';
+import { sha256 } from 'js-sha256';
 import lds from 'lodash';
 import styles from './index.module.less'
 import moment from 'moment';
+
+
+const UPLOAD_CHUNK_SIZE = 4 * 1024 * 1024;
+
+
+const readBlob = blob => new Promise((resolve, reject) => {
+  const reader = new FileReader();
+  reader.onload = () => resolve(reader.result);
+  reader.onerror = () => reject(reader.error || new Error('读取文件失败'));
+  reader.readAsArrayBuffer(blob);
+});
 
 
 class FileManager extends React.Component {
@@ -30,6 +42,7 @@ class FileManager extends React.Component {
       fetching: false,
       showDot: false,
       uploading: false,
+      preparingUpload: false,
       inputPath: null,
       uploadStatus: 'active',
       approvalRequest: null,
@@ -49,10 +62,6 @@ class FileManager extends React.Component {
       this.setState({objects: [], pwd})
       this.fetchFiles(pwd)
     }
-  }
-
-  componentWillUnmount() {
-    if (this.socket) this.socket.close()
   }
 
   columns = [{
@@ -149,20 +158,26 @@ class FileManager extends React.Component {
   }
 
   handleUpload = () => {
-    this.input.onchange = e => {
+    this.input.onchange = async e => {
       const file = e.target['files'][0];
       this.input.value = '';
-      if (!file) return
+      if (!file) return;
       const hostId = Number(this.props.id);
       const path = '/' + this.state.pwd.join('/');
-      const payload = {
-        host_ids: [hostId],
-        path,
-        filename: file.name,
-        size: file.size,
-      }
-      this.setState({
-        approvalRequest: {
+      const hideProgress = message.loading('正在计算文件 SHA-256，请稍候...', 0);
+      this.setState({preparingUpload: true});
+      try {
+        const fileSha256 = await this._hashFile(file);
+        const payload = {
+          host_ids: [hostId],
+          path,
+          filename: file.name,
+          size: file.size,
+          sha256: fileSha256,
+          chunk_size: UPLOAD_CHUNK_SIZE,
+          conflict_strategy: 'overwrite',
+        };
+        const request = {
           operation: {
             action: 'file.write',
             resource_type: 'host',
@@ -170,58 +185,163 @@ class FileManager extends React.Component {
             payload,
           },
           file,
+          fileSha256,
           hostId,
           path,
           summary: `向主机 ${hostId} 的 ${path} 上传文件 ${file.name}`,
+        };
+        const storedUploadId = this._getStoredUploadId(request);
+        if (storedUploadId) {
+          try {
+            const session = await http.get(`/api/file/uploads/${storedUploadId}/`);
+            if (this._canResume(request, session)) {
+              message.info(`已找到上传进度，将从 ${session.offset} 字节处继续。`);
+              this.executeUpload(request, null, session).catch(() => null);
+              return;
+            }
+          } catch (e) {
+            // Invalid and expired sessions are discarded below so a new approval can be used.
+          }
+          this._clearStoredUpload(request);
         }
-      })
-    }
+        this.setState({
+          approvalRequest: request
+        });
+      } catch (e) {
+        message.error('无法读取文件并计算 SHA-256');
+      } finally {
+        hideProgress();
+        this.setState({preparingUpload: false});
+      }
+    };
     this.input.click();
   };
 
-  executeUpload = (request, approvalId) => {
+  executeUpload = async (request, approvalId, existingSession = null) => {
     this.setState({uploading: true, uploadStatus: 'active', percent: 0});
-    const formData = new FormData();
-    const token = uniqueId();
-    this._updatePercent(token);
-    formData.append('file', request.file);
-    formData.append('id', request.hostId);
-    formData.append('token', token);
-    formData.append('path', request.path);
-    formData.append('approval_id', approvalId);
-    return http.post('/api/file/object/', formData, {timeout: 600000, onUploadProgress: this._updateLocal})
-      .then(() => {
-        this.setState({uploadStatus: 'success'});
-        this.fetchFiles()
-      })
-      .catch(error => {
-        if (this.socket) this.socket.close()
-        this.setState({uploadStatus: 'exception'});
-        return Promise.reject(error)
-      })
-      .finally(() => setTimeout(() => this.setState({uploading: false}), 2000))
+    let session = existingSession;
+    try {
+      if (!session) {
+        const payload = request.operation.payload;
+        session = await http.post('/api/file/uploads/', {
+          id: request.hostId,
+          path: request.path,
+          filename: request.file.name,
+          size: request.file.size,
+          sha256: request.fileSha256,
+          chunk_size: payload.chunk_size,
+          conflict_strategy: payload.conflict_strategy,
+          approval_id: approvalId,
+        });
+        this._storeUploadId(request, session.id);
+      }
+
+      let offset = session.offset;
+      this._setUploadPercent(offset, request.file.size);
+      while (offset < request.file.size) {
+        const chunkOffset = offset;
+        const chunk = request.file.slice(
+          chunkOffset, Math.min(chunkOffset + session.chunk_size, request.file.size)
+        );
+        const chunkSha256 = sha256(await readBlob(chunk));
+        const formData = new FormData();
+        formData.append('offset', chunkOffset);
+        formData.append('sha256', chunkSha256);
+        formData.append('chunk', chunk, request.file.name);
+        try {
+          session = await http.post(
+            `/api/file/uploads/${session.id}/chunk/`,
+            formData,
+            {
+              timeout: 600000,
+              onUploadProgress: event => {
+                this._setUploadPercent(chunkOffset + event.loaded, request.file.size)
+              }
+            }
+          );
+        } catch (error) {
+          const latest = await this._recoverUploadStatus(session.id);
+          if (!latest || latest.status !== 'active' || latest.offset <= chunkOffset) {
+            throw error;
+          }
+          session = latest;
+        }
+        offset = session.offset;
+        this._setUploadPercent(offset, request.file.size);
+      }
+
+      session = await http.post(`/api/file/uploads/${session.id}/complete/`);
+      this._clearStoredUpload(request);
+      this.setState({uploadStatus: 'success', percent: 100});
+      message.success(`上传完成，SHA-256：${session.actual_sha256}`);
+      await this.fetchFiles();
+      return session;
+    } catch (error) {
+      this.setState({uploadStatus: 'exception'});
+      message.warning('上传已暂停，重新选择同一文件可从断点继续。');
+      if (session && session.id) {
+        // The approval has already created a resumable server-side session.
+        // Resolve so ApprovalGate closes instead of asking for a second approval.
+        return {...session, paused: true}
+      }
+      return Promise.reject(error)
+    } finally {
+      setTimeout(() => this.setState({uploading: false}), 2000)
+    }
   };
 
-  _updateLocal = (e) => {
-    const percent = e.loaded / e.total * 100 / 2
-    this.setState({percent: Number(percent.toFixed(1))})
-  }
-
-  _updatePercent = token => {
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    this.socket = new WebSocket(`${protocol}//${window.location.host}/api/ws/subscribe/${token}/?x-token=${X_TOKEN}`);
-    this.socket.onopen = () => this.socket.send('ok');
-    this.socket.onmessage = e => {
-      if (e.data === 'pong') {
-        this.socket.send('ping')
-      } else {
-        const percent = this.state.percent + Number(e.data) / 2;
-        if (percent > this.state.percent) this.setState({percent: Number(percent.toFixed(1))});
-        if (percent === 100) {
-          this.socket.close()
-        }
-      }
+  _hashFile = async file => {
+    const digest = sha256.create();
+    for (let offset = 0; offset < file.size; offset += UPLOAD_CHUNK_SIZE) {
+      digest.update(await readBlob(file.slice(offset, offset + UPLOAD_CHUNK_SIZE)));
     }
+    return digest.hex();
+  };
+
+  _uploadStorageKey = request => (
+    `spug:file-upload:${request.hostId}:${encodeURIComponent(request.path)}:${request.fileSha256}`
+  );
+
+  _getStoredUploadId = request => {
+    try {
+      return window.localStorage.getItem(this._uploadStorageKey(request));
+    } catch (e) {
+      return null;
+    }
+  };
+
+  _storeUploadId = (request, uploadId) => {
+    try {
+      window.localStorage.setItem(this._uploadStorageKey(request), uploadId);
+    } catch (e) {
+      // Upload still works when storage is unavailable; only cross-refresh resume is disabled.
+    }
+  };
+
+  _clearStoredUpload = request => {
+    try {
+      window.localStorage.removeItem(this._uploadStorageKey(request));
+    } catch (e) {
+      // Ignore unavailable browser storage.
+    }
+  };
+
+  _canResume = (request, session) => {
+    return session.status === 'active'
+      && session.host_id === request.hostId
+      && session.directory === request.path
+      && session.filename === request.file.name
+      && session.size === request.file.size
+      && session.expected_sha256 === request.fileSha256;
+  };
+
+  _recoverUploadStatus = uploadId => {
+    return http.get(`/api/file/uploads/${uploadId}/`).catch(() => null)
+  };
+
+  _setUploadPercent = (offset, total) => {
+    const percent = total ? Math.min(offset / total * 100, 99.9) : 99.9;
+    this.setState({percent: Number(percent.toFixed(1))})
   };
 
   handleDownload = (name) => {
@@ -317,6 +437,7 @@ class FileManager extends React.Component {
                 style={{marginLeft: 12}}
                 size="small"
                 type="primary"
+                loading={this.state.preparingUpload}
                 icon={<UploadOutlined/>}
                 onClick={this.handleUpload}>上传文件</AuthButton>
             )}

@@ -7,6 +7,9 @@ from paramiko.auth_handler import AuthHandler
 from paramiko.ssh_exception import AuthenticationException, SSHException
 from io import StringIO
 from uuid import uuid4
+import errno
+import hashlib
+import posixpath
 import time
 import re
 
@@ -160,6 +163,110 @@ class SSH:
     def put_file_by_fl(self, fl, remote_path, callback=None):
         sftp = self._get_sftp()
         sftp.putfo(fl, remote_path, callback=callback, confirm=False)
+
+    def write_file_chunk(self, fl, remote_path, offset, block_size=1024 * 1024):
+        sftp = self._get_sftp()
+        if offset:
+            remote_size = sftp.stat(remote_path).st_size
+            if remote_size != offset:
+                raise ValueError(
+                    'remote upload offset mismatch: expected %s, got %s' % (
+                        offset, remote_size
+                    )
+                )
+            mode = 'r+b'
+        else:
+            mode = 'wb'
+        written = 0
+        with sftp.open(remote_path, mode) as remote_file:
+            if offset:
+                remote_file.seek(offset)
+            block = fl.read(block_size)
+            while block:
+                remote_file.write(block)
+                written += len(block)
+                block = fl.read(block_size)
+            remote_file.flush()
+        return offset + written
+
+    def create_empty_file(self, remote_path):
+        with self._get_sftp().open(remote_path, 'wb'):
+            pass
+
+    def remote_file_sha256(self, remote_path, block_size=1024 * 1024):
+        digest = hashlib.sha256()
+        with self._get_sftp().open(remote_path, 'rb') as remote_file:
+            block = remote_file.read(block_size)
+            while block:
+                digest.update(block)
+                block = remote_file.read(block_size)
+        return digest.hexdigest()
+
+    def remote_file_size(self, remote_path):
+        try:
+            return self._get_sftp().stat(remote_path).st_size
+        except IOError as exc:
+            missing = getattr(exc, 'errno', None) == errno.ENOENT or (
+                'no such file' in str(exc).lower()
+            )
+            if missing:
+                return 0
+            raise
+
+    def replace_file(self, source_path, destination_path, overwrite=True):
+        sftp = self._get_sftp()
+        if not overwrite:
+            try:
+                sftp.stat(destination_path)
+            except IOError:
+                pass
+            else:
+                raise FileExistsError('destination file already exists')
+        if overwrite and hasattr(sftp, 'posix_rename'):
+            try:
+                sftp.posix_rename(source_path, destination_path)
+                return
+            except IOError as exc:
+                unsupported = getattr(exc, 'errno', None) in (
+                    errno.ENOSYS, errno.EOPNOTSUPP
+                ) or 'unsupported' in str(exc).lower()
+                if not unsupported:
+                    raise
+
+        destination_exists = False
+        if overwrite:
+            try:
+                sftp.stat(destination_path)
+            except IOError:
+                pass
+            else:
+                destination_exists = True
+        backup_path = posixpath.join(
+            posixpath.dirname(destination_path),
+            '.spug-backup-%s' % uuid4().hex,
+        )
+        if destination_exists:
+            sftp.rename(destination_path, backup_path)
+        try:
+            sftp.rename(source_path, destination_path)
+        except Exception:
+            if destination_exists:
+                sftp.rename(backup_path, destination_path)
+            raise
+        if destination_exists:
+            try:
+                sftp.remove(backup_path)
+            except IOError:
+                # The destination is already valid. Leaving a backup is safer
+                # than rolling the successfully replaced file back.
+                pass
+
+    def remove_file_if_exists(self, remote_path):
+        try:
+            self._get_sftp().remove(remote_path)
+            return True
+        except IOError:
+            return False
 
     def list_dir_attr(self, path):
         sftp = self._get_sftp()

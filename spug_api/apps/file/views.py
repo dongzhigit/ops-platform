@@ -2,14 +2,71 @@
 # Copyright: (c) <spug.dev@gmail.com>
 # Released under the AGPL-3.0 License.
 from django.views.generic import View
+from django.db import transaction
 from django_redis import get_redis_connection
 from apps.host.models import Host
 from apps.account.utils import has_host_perm
 from apps.audit.services import ApprovalError, authorize_operation, record_event
+from apps.file.models import FileTransfer
 from apps.file.utils import FileResponseAfter, fetch_dir_list
 from libs import json_response, JsonParser, Argument, auth
 from functools import partial
+from datetime import datetime
+import hashlib
+import logging
 import os
+import posixpath
+import re
+import uuid
+
+
+logger = logging.getLogger(__name__)
+MIN_CHUNK_SIZE = 256 * 1024
+MAX_CHUNK_SIZE = 16 * 1024 * 1024
+MAX_FILE_SIZE = 1024 * 1024 * 1024 * 1024
+SHA256_PATTERN = re.compile(r'^[0-9a-f]{64}$')
+
+
+class FileTransferError(Exception):
+    pass
+
+
+def _normalize_upload_target(directory, filename):
+    if '\x00' in directory or '\x00' in filename:
+        raise FileTransferError('文件路径包含非法字符')
+    if not directory.startswith('/'):
+        raise FileTransferError('上传目录必须是绝对路径')
+    directory = posixpath.normpath(directory)
+    normalized_name = posixpath.basename(filename)
+    if normalized_name != filename or normalized_name in ('', '.', '..'):
+        raise FileTransferError('文件名不合法')
+    if len(filename.encode('utf-8')) > 255:
+        raise FileTransferError('文件名过长')
+    return directory, normalized_name
+
+
+def _file_sha256(file_obj):
+    digest = hashlib.sha256()
+    file_obj.seek(0)
+    block = file_obj.read(1024 * 1024)
+    while block:
+        digest.update(block)
+        block = file_obj.read(1024 * 1024)
+    file_obj.seek(0)
+    return digest.hexdigest()
+
+
+def _get_user_transfer(upload_id, user, for_update=False):
+    transfers = FileTransfer.objects.select_related('host', 'approval')
+    if for_update:
+        transfers = transfers.select_for_update()
+    transfer = transfers.filter(pk=upload_id, uploader=user).first()
+    if not transfer:
+        raise FileTransferError('未找到上传会话')
+    if not has_host_perm(user, transfer.host_id, action='file.write'):
+        raise FileTransferError('无权访问主机，请联系管理员')
+    transfer.refresh_expiry_status()
+    return transfer
 
 
 class FileView(View):
@@ -191,3 +248,336 @@ class ObjectView(View):
     def _compute_progress(self, rds_cli, token, total, value, *args):
         percent = '%.1f' % (value / total * 100)
         rds_cli.publish(token, percent)
+
+
+class UploadSessionView(View):
+    @auth('host.console.upload')
+    def post(self, request):
+        form, error = JsonParser(
+            Argument('id', type=int, help='参数错误'),
+            Argument('path', help='请输入上传目录'),
+            Argument('filename', help='请输入文件名'),
+            Argument(
+                'size', type=int, filter=lambda value: 0 <= value <= MAX_FILE_SIZE,
+                help='文件大小超出允许范围',
+            ),
+            Argument(
+                'chunk_size', type=int,
+                filter=lambda value: MIN_CHUNK_SIZE <= value <= MAX_CHUNK_SIZE,
+                help='分片大小必须在 256KB 到 16MB 之间',
+            ),
+            Argument(
+                'sha256', handler=lambda value: value.lower(),
+                filter=lambda value: bool(SHA256_PATTERN.match(value.lower())),
+                help='文件 SHA-256 不合法',
+            ),
+            Argument(
+                'conflict_strategy', default='overwrite',
+                filter=lambda value: value in ('overwrite', 'reject'),
+                help='不支持的文件冲突策略',
+            ),
+            Argument('approval_id', type=uuid.UUID, help='请指定有效审批单'),
+        ).parse(request.body)
+        if error:
+            return json_response(error=error)
+        if not has_host_perm(request.user, form.id, action='file.write'):
+            return json_response(error='无权访问主机，请联系管理员')
+        host = Host.objects.filter(pk=form.id).first()
+        if not host:
+            return json_response(error='未找到指定主机')
+        try:
+            directory, filename = _normalize_upload_target(form.path, form.filename)
+        except FileTransferError as exc:
+            return json_response(error=str(exc))
+
+        upload_id = uuid.uuid4()
+        payload = {
+            'host_ids': [form.id],
+            'path': directory,
+            'filename': filename,
+            'size': form.size,
+            'sha256': form.sha256,
+            'chunk_size': form.chunk_size,
+            'conflict_strategy': form.conflict_strategy,
+        }
+        try:
+            gate = authorize_operation(
+                requester=request.user,
+                action='file.write',
+                resource_type='host',
+                resource_ids=[form.id],
+                payload=payload,
+                approval_id=form.approval_id,
+                execution_ref=upload_id,
+                request=request,
+            )
+        except ApprovalError as exc:
+            return json_response(error=exc.message)
+
+        remote_path = posixpath.join(directory, filename)
+        temporary_path = posixpath.join(
+            directory, '.spug-upload-%s.part' % upload_id.hex
+        )
+        transfer = FileTransfer.objects.create(
+            id=upload_id,
+            correlation_id=gate['correlation_id'],
+            uploader=request.user,
+            host=host,
+            approval_id=gate['approval_id'],
+            directory=directory,
+            filename=filename,
+            remote_path=remote_path,
+            temporary_path=temporary_path,
+            size=form.size,
+            chunk_size=form.chunk_size,
+            expected_sha256=form.sha256,
+            conflict_strategy=form.conflict_strategy,
+        )
+        record_event(
+            correlation_id=transfer.correlation_id,
+            actor=request.user,
+            action='file.write',
+            resource_type='host',
+            resource_id=host.id,
+            result='started',
+            details={
+                'upload_id': str(transfer.id),
+                'path': directory,
+                'filename': filename,
+                'size': transfer.size,
+                'sha256': transfer.expected_sha256,
+                'chunk_size': transfer.chunk_size,
+                'conflict_strategy': transfer.conflict_strategy,
+            },
+            request=request,
+        )
+        return json_response(transfer.to_view())
+
+
+class UploadSessionDetailView(View):
+    @auth('host.console.upload')
+    def get(self, request, upload_id):
+        try:
+            transfer = _get_user_transfer(upload_id, request.user)
+        except FileTransferError as exc:
+            return json_response(error=str(exc))
+        return json_response(transfer.to_view())
+
+    @auth('host.console.upload')
+    def delete(self, request, upload_id):
+        try:
+            with transaction.atomic():
+                transfer = _get_user_transfer(
+                    upload_id, request.user, for_update=True
+                )
+                if transfer.status == 'completed':
+                    raise FileTransferError('已完成的上传不能取消')
+                cleanup_succeeded = False
+                try:
+                    with transfer.host.get_ssh() as ssh:
+                        cleanup_succeeded = ssh.remove_file_if_exists(
+                            transfer.temporary_path
+                        )
+                except Exception:
+                    logger.exception('failed to remove cancelled SFTP upload part')
+                transfer.status = 'cancelled'
+                transfer.error = None
+                transfer.save(update_fields=('status', 'error', 'updated_at'))
+            record_event(
+                correlation_id=transfer.correlation_id,
+                actor=request.user,
+                action='file.write',
+                resource_type='host',
+                resource_id=transfer.host_id,
+                result='cancelled',
+                details={
+                    'upload_id': str(transfer.id),
+                    'filename': transfer.filename,
+                    'temporary_file_removed': cleanup_succeeded,
+                },
+                request=request,
+            )
+            return json_response(transfer.to_view())
+        except FileTransferError as exc:
+            return json_response(error=str(exc))
+
+
+class UploadChunkView(View):
+    @auth('host.console.upload')
+    def post(self, request, upload_id):
+        form, error = JsonParser(
+            Argument('offset', type=int, filter=lambda value: value >= 0, help='分片偏移量不合法'),
+            Argument(
+                'sha256', handler=lambda value: value.lower(),
+                filter=lambda value: bool(SHA256_PATTERN.match(value.lower())),
+                help='分片 SHA-256 不合法',
+            ),
+        ).parse(request.POST)
+        if error:
+            return json_response(error=error)
+        chunk = request.FILES.get('chunk')
+        if not chunk:
+            return json_response(error='请选择上传分片')
+        reconciled = False
+        failure = None
+        try:
+            with transaction.atomic():
+                transfer = _get_user_transfer(
+                    upload_id, request.user, for_update=True
+                )
+                if transfer.status != 'active':
+                    raise FileTransferError('上传会话当前状态不允许继续上传')
+                if form.offset != transfer.offset:
+                    raise FileTransferError(
+                        '上传偏移量已变化，请刷新状态后续传'
+                    )
+                with transfer.host.get_ssh() as ssh:
+                    remote_offset = ssh.remote_file_size(
+                        transfer.temporary_path
+                    )
+                    if remote_offset > transfer.size:
+                        failure = '远端临时文件长度超过审批文件大小'
+                        transfer.status = 'failed'
+                        transfer.error = failure
+                        transfer.save(update_fields=(
+                            'status', 'error', 'updated_at'
+                        ))
+                    elif remote_offset != transfer.offset:
+                        transfer.offset = remote_offset
+                        transfer.save(update_fields=('offset', 'updated_at'))
+                        reconciled = True
+                    else:
+                        remaining = transfer.size - transfer.offset
+                        expected_size = min(transfer.chunk_size, remaining)
+                        if chunk.size != expected_size:
+                            raise FileTransferError(
+                                '分片大小不匹配，期望 %s 字节' % expected_size
+                            )
+                        if _file_sha256(chunk) != form.sha256:
+                            raise FileTransferError('分片 SHA-256 校验失败')
+                        new_offset = ssh.write_file_chunk(
+                            chunk, transfer.temporary_path, transfer.offset
+                        )
+                        if new_offset != transfer.offset + chunk.size:
+                            raise FileTransferError('远端分片写入长度不匹配')
+                        transfer.offset = new_offset
+                        transfer.save(update_fields=('offset', 'updated_at'))
+            if failure:
+                record_event(
+                    correlation_id=transfer.correlation_id,
+                    actor=request.user,
+                    action='file.write',
+                    resource_type='host',
+                    resource_id=transfer.host_id,
+                    result='failed',
+                    details={
+                        'upload_id': str(transfer.id),
+                        'filename': transfer.filename,
+                        'reason': failure,
+                    },
+                    request=request,
+                )
+                return json_response(error=failure)
+            if reconciled:
+                return json_response(
+                    error='已根据远端临时文件恢复上传偏移，请从新偏移继续'
+                )
+            return json_response(transfer.to_view())
+        except FileTransferError as exc:
+            return json_response(error=str(exc))
+        except Exception:
+            logger.exception('failed to upload SFTP file chunk')
+            return json_response(error='分片上传失败，请重新选择同一文件续传')
+
+
+class UploadCompleteView(View):
+    @auth('host.console.upload')
+    def post(self, request, upload_id):
+        failure = None
+        try:
+            with transaction.atomic():
+                transfer = _get_user_transfer(
+                    upload_id, request.user, for_update=True
+                )
+                if transfer.status == 'completed':
+                    return json_response(transfer.to_view())
+                if transfer.status != 'active':
+                    raise FileTransferError('上传会话当前状态不允许完成')
+                if transfer.offset != transfer.size:
+                    raise FileTransferError(
+                        '文件尚未上传完成，当前进度 %s/%s' % (
+                            transfer.offset, transfer.size
+                        )
+                    )
+                try:
+                    with transfer.host.get_ssh() as ssh:
+                        if transfer.size == 0:
+                            ssh.create_empty_file(transfer.temporary_path)
+                        actual_sha256 = ssh.remote_file_sha256(
+                            transfer.temporary_path
+                        )
+                        if actual_sha256 != transfer.expected_sha256:
+                            transfer.status = 'failed'
+                            transfer.actual_sha256 = actual_sha256
+                            transfer.error = '远端文件 SHA-256 校验失败'
+                            transfer.save(update_fields=(
+                                'status', 'actual_sha256', 'error', 'updated_at'
+                            ))
+                            failure = transfer.error
+                        else:
+                            ssh.replace_file(
+                                transfer.temporary_path,
+                                transfer.remote_path,
+                                overwrite=transfer.conflict_strategy == 'overwrite',
+                            )
+                            transfer.status = 'completed'
+                            transfer.actual_sha256 = actual_sha256
+                            transfer.error = None
+                            transfer.completed_at = datetime.now()
+                            transfer.save(update_fields=(
+                                'status', 'actual_sha256', 'error',
+                                'completed_at', 'updated_at'
+                            ))
+                except FileTransferError:
+                    raise
+                except Exception:
+                    logger.exception('failed to finalize SFTP upload')
+                    raise FileTransferError('完成上传失败，可稍后重试')
+            if failure:
+                record_event(
+                    correlation_id=transfer.correlation_id,
+                    actor=request.user,
+                    action='file.write',
+                    resource_type='host',
+                    resource_id=transfer.host_id,
+                    result='failed',
+                    details={
+                        'upload_id': str(transfer.id),
+                        'filename': transfer.filename,
+                        'reason': failure,
+                        'expected_sha256': transfer.expected_sha256,
+                        'actual_sha256': transfer.actual_sha256,
+                    },
+                    request=request,
+                )
+                return json_response(error=failure)
+            record_event(
+                correlation_id=transfer.correlation_id,
+                actor=request.user,
+                action='file.write',
+                resource_type='host',
+                resource_id=transfer.host_id,
+                result='succeeded',
+                details={
+                    'upload_id': str(transfer.id),
+                    'path': transfer.directory,
+                    'filename': transfer.filename,
+                    'size': transfer.size,
+                    'sha256': transfer.actual_sha256,
+                    'conflict_strategy': transfer.conflict_strategy,
+                },
+                request=request,
+            )
+            return json_response(transfer.to_view())
+        except FileTransferError as exc:
+            return json_response(error=str(exc))

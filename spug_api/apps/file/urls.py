@@ -8,4 +8,8 @@ from .views import *
 urlpatterns = [
     path('', FileView.as_view()),
     path('object/', ObjectView.as_view()),
+    path('uploads/', UploadSessionView.as_view()),
+    path('uploads/<uuid:upload_id>/', UploadSessionDetailView.as_view()),
+    path('uploads/<uuid:upload_id>/chunk/', UploadChunkView.as_view()),
+    path('uploads/<uuid:upload_id>/complete/', UploadCompleteView.as_view()),
 ]

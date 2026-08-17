@@ -1,4 +1,7 @@
 import json
+import hashlib
+import errno
+import uuid
 from datetime import datetime, timedelta
 from unittest.mock import patch
 
@@ -21,10 +24,18 @@ from apps.audit.services import (
 from apps.audit.views import OperationPreviewView
 from apps.exec.models import ExecHistory
 from apps.exec.views import TaskView
-from apps.file.views import ObjectView
+from apps.file.models import FileTransfer
+from apps.file.views import (
+    ObjectView,
+    UploadChunkView,
+    UploadCompleteView,
+    UploadSessionDetailView,
+    UploadSessionView,
+)
 from apps.host.models import Host
 from apps.schedule.models import Task
 from apps.schedule.views import Schedule
+from libs.ssh import SSH
 
 
 class AuditApprovalTest(TestCase):
@@ -358,6 +369,378 @@ class AuditApprovalTest(TestCase):
         self.assertEqual(delete_approval.status, 'consumed')
         self.assertTrue(AuditEvent.objects.filter(action='file.write', result='succeeded').exists())
         self.assertTrue(AuditEvent.objects.filter(action='file.delete', result='succeeded').exists())
+
+    def test_chunked_file_upload_resumes_and_verifies_remote_sha256(self):
+        host = Host.objects.create(
+            name='chunk-host', hostname='10.0.0.4', port=22, username='root',
+            created_by=self.requester,
+        )
+        chunk_size = 256 * 1024
+        content = (b'spug-resumable-upload-' * 14000) + b'final'
+        expected_sha256 = hashlib.sha256(content).hexdigest()
+        payload = {
+            'host_ids': [host.id],
+            'path': '/tmp',
+            'filename': 'large.bin',
+            'size': len(content),
+            'sha256': expected_sha256,
+            'chunk_size': chunk_size,
+            'conflict_strategy': 'overwrite',
+        }
+        approval = create_approval(
+            requester=self.requester,
+            action='file.write',
+            resource_type='host',
+            resource_ids=[host.id],
+            payload=payload,
+            summary='分片上传大文件',
+        )
+        decide_approval(
+            approval_id=approval.id,
+            approver=self.approver,
+            is_pass=True,
+        )
+
+        init_request = self.factory.post(
+            '/file/uploads/',
+            data=json.dumps(dict(
+                payload,
+                id=host.id,
+                approval_id=str(approval.id),
+            )),
+            content_type='application/json',
+        )
+        init_request.user = self.requester
+        init_response = UploadSessionView.as_view()(init_request)
+        init_body = json.loads(init_response.content.decode('utf-8'))
+        self.assertFalse(init_body['error'])
+        upload_id = init_body['data']['id']
+        transfer = FileTransfer.objects.get(pk=upload_id)
+        self.assertEqual(transfer.offset, 0)
+        approval.refresh_from_db()
+        self.assertEqual(approval.status, 'consumed')
+        self.assertEqual(approval.execution_ref, upload_id)
+
+        remote_files = {}
+
+        class ChunkSSHStub:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc_val, exc_tb):
+                return False
+
+            def write_file_chunk(self, file_obj, path, offset):
+                current = remote_files.get(path, b'')
+                if len(current) != offset:
+                    raise ValueError('offset mismatch')
+                remote_files[path] = current + file_obj.read()
+                return len(remote_files[path])
+
+            def remote_file_size(self, path):
+                return len(remote_files.get(path, b''))
+
+            def remote_file_sha256(self, path):
+                return hashlib.sha256(remote_files[path]).hexdigest()
+
+            def replace_file(self, source, destination, overwrite=True):
+                if not overwrite and destination in remote_files:
+                    raise FileExistsError(destination)
+                remote_files[destination] = remote_files.pop(source)
+
+            def create_empty_file(self, path):
+                remote_files[path] = b''
+
+        ssh_stub = ChunkSSHStub()
+        first_chunk = content[:chunk_size]
+        bad_chunk_request = self.factory.post(
+            '/file/uploads/%s/chunk/' % upload_id,
+            data={
+                'offset': 0,
+                'sha256': '0' * 64,
+                'chunk': SimpleUploadedFile('chunk.bin', first_chunk),
+            },
+        )
+        bad_chunk_request.user = self.requester
+        with patch('apps.file.views.Host.get_ssh', return_value=ssh_stub):
+            bad_chunk_response = UploadChunkView.as_view()(
+                bad_chunk_request, upload_id=upload_id
+            )
+        self.assertIn(
+            'SHA-256 校验失败',
+            json.loads(bad_chunk_response.content.decode('utf-8'))['error'],
+        )
+        transfer.refresh_from_db()
+        self.assertEqual(transfer.offset, 0)
+        self.assertEqual(remote_files, {})
+
+        first_request = self.factory.post(
+            '/file/uploads/%s/chunk/' % upload_id,
+            data={
+                'offset': 0,
+                'sha256': hashlib.sha256(first_chunk).hexdigest(),
+                'chunk': SimpleUploadedFile('chunk.bin', first_chunk),
+            },
+        )
+        first_request.user = self.requester
+        with patch('apps.file.views.Host.get_ssh', return_value=ssh_stub):
+            first_response = UploadChunkView.as_view()(
+                first_request, upload_id=upload_id
+            )
+        first_body = json.loads(first_response.content.decode('utf-8'))
+        self.assertFalse(first_body['error'])
+        self.assertEqual(first_body['data']['offset'], chunk_size)
+
+        FileTransfer.objects.filter(pk=upload_id).update(offset=0)
+        reconcile_request = self.factory.post(
+            '/file/uploads/%s/chunk/' % upload_id,
+            data={
+                'offset': 0,
+                'sha256': hashlib.sha256(first_chunk).hexdigest(),
+                'chunk': SimpleUploadedFile('chunk.bin', first_chunk),
+            },
+        )
+        reconcile_request.user = self.requester
+        with patch('apps.file.views.Host.get_ssh', return_value=ssh_stub):
+            reconcile_response = UploadChunkView.as_view()(
+                reconcile_request, upload_id=upload_id
+            )
+        self.assertIn(
+            '恢复上传偏移',
+            json.loads(reconcile_response.content.decode('utf-8'))['error'],
+        )
+        transfer.refresh_from_db()
+        self.assertEqual(transfer.offset, chunk_size)
+
+        status_request = self.factory.get('/file/uploads/%s/' % upload_id)
+        status_request.user = self.requester
+        status_response = UploadSessionDetailView.as_view()(
+            status_request, upload_id=upload_id
+        )
+        self.assertEqual(
+            json.loads(status_response.content.decode('utf-8'))['data']['offset'],
+            chunk_size,
+        )
+
+        duplicate_request = self.factory.post(
+            '/file/uploads/%s/chunk/' % upload_id,
+            data={
+                'offset': 0,
+                'sha256': hashlib.sha256(first_chunk).hexdigest(),
+                'chunk': SimpleUploadedFile('chunk.bin', first_chunk),
+            },
+        )
+        duplicate_request.user = self.requester
+        with patch('apps.file.views.Host.get_ssh', return_value=ssh_stub):
+            duplicate_response = UploadChunkView.as_view()(
+                duplicate_request, upload_id=upload_id
+            )
+        self.assertIn(
+            '偏移量已变化',
+            json.loads(duplicate_response.content.decode('utf-8'))['error'],
+        )
+
+        second_chunk = content[chunk_size:]
+        second_request = self.factory.post(
+            '/file/uploads/%s/chunk/' % upload_id,
+            data={
+                'offset': chunk_size,
+                'sha256': hashlib.sha256(second_chunk).hexdigest(),
+                'chunk': SimpleUploadedFile('chunk.bin', second_chunk),
+            },
+        )
+        second_request.user = self.requester
+        with patch('apps.file.views.Host.get_ssh', return_value=ssh_stub):
+            second_response = UploadChunkView.as_view()(
+                second_request, upload_id=upload_id
+            )
+        self.assertFalse(json.loads(second_response.content.decode('utf-8'))['error'])
+
+        complete_request = self.factory.post('/file/uploads/%s/complete/' % upload_id)
+        complete_request.user = self.requester
+        with patch('apps.file.views.Host.get_ssh', return_value=ssh_stub):
+            complete_response = UploadCompleteView.as_view()(
+                complete_request, upload_id=upload_id
+            )
+        complete_body = json.loads(complete_response.content.decode('utf-8'))
+        self.assertFalse(complete_body['error'])
+        self.assertEqual(complete_body['data']['status'], 'completed')
+        self.assertEqual(complete_body['data']['actual_sha256'], expected_sha256)
+        self.assertEqual(remote_files['/tmp/large.bin'], content)
+        self.assertNotIn(transfer.temporary_path, remote_files)
+        self.assertTrue(AuditEvent.objects.filter(
+            correlation_id=approval.correlation_id,
+            action='file.write',
+            result='succeeded',
+        ).exists())
+
+    def test_chunked_upload_approval_binds_digest_and_routes_resolve(self):
+        host = Host.objects.create(
+            name='digest-host', hostname='10.0.0.5', port=22, username='root',
+            created_by=self.requester,
+        )
+        payload = {
+            'host_ids': [host.id],
+            'path': '/tmp',
+            'filename': 'artifact.bin',
+            'size': 1,
+            'sha256': hashlib.sha256(b'a').hexdigest(),
+            'chunk_size': 256 * 1024,
+            'conflict_strategy': 'overwrite',
+        }
+        approval = create_approval(
+            requester=self.requester,
+            action='file.write',
+            resource_type='host',
+            resource_ids=[host.id],
+            payload=payload,
+            summary='上传指定制品',
+        )
+        decide_approval(
+            approval_id=approval.id,
+            approver=self.approver,
+            is_pass=True,
+        )
+        changed = dict(payload, sha256=hashlib.sha256(b'b').hexdigest())
+        request = self.factory.post(
+            '/file/uploads/',
+            data=json.dumps(dict(
+                changed,
+                id=host.id,
+                approval_id=str(approval.id),
+            )),
+            content_type='application/json',
+        )
+        request.user = self.requester
+        response = UploadSessionView.as_view()(request)
+        self.assertIn(
+            '参数不匹配',
+            json.loads(response.content.decode('utf-8'))['error'],
+        )
+        self.assertFalse(FileTransfer.objects.exists())
+        approval.refresh_from_db()
+        self.assertEqual(approval.status, 'approved')
+
+        self.assertIs(
+            resolve('/file/uploads/%s/' % uuid.uuid4()).func.view_class,
+            UploadSessionDetailView,
+        )
+        self.assertIs(
+            resolve('/file/uploads/%s/chunk/' % uuid.uuid4()).func.view_class,
+            UploadChunkView,
+        )
+        self.assertIs(
+            resolve('/file/uploads/%s/complete/' % uuid.uuid4()).func.view_class,
+            UploadCompleteView,
+        )
+
+    def test_chunked_upload_hash_mismatch_never_replaces_target(self):
+        host = Host.objects.create(
+            name='hash-host', hostname='10.0.0.6', port=22, username='root',
+            created_by=self.requester,
+        )
+        expected = b'approved-content'
+        approval = create_approval(
+            requester=self.requester,
+            action='file.write',
+            resource_type='host',
+            resource_ids=[host.id],
+            payload={
+                'host_ids': [host.id],
+                'path': '/tmp',
+                'filename': 'guarded.bin',
+                'size': len(expected),
+                'sha256': hashlib.sha256(expected).hexdigest(),
+                'chunk_size': 256 * 1024,
+                'conflict_strategy': 'overwrite',
+            },
+            summary='上传受校验保护的制品',
+        )
+        transfer = FileTransfer.objects.create(
+            correlation_id=approval.correlation_id,
+            uploader=self.requester,
+            host=host,
+            approval=approval,
+            directory='/tmp',
+            filename='guarded.bin',
+            remote_path='/tmp/guarded.bin',
+            temporary_path='/tmp/.spug-upload-hash.part',
+            size=len(expected),
+            offset=len(expected),
+            chunk_size=256 * 1024,
+            expected_sha256=hashlib.sha256(expected).hexdigest(),
+            conflict_strategy='overwrite',
+        )
+        remote_files = {
+            transfer.temporary_path: b'corrupt-content!',
+            transfer.remote_path: b'original-content',
+        }
+        replacements = []
+
+        class CorruptSSHStub:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc_val, exc_tb):
+                return False
+
+            def remote_file_sha256(self, path):
+                return hashlib.sha256(remote_files[path]).hexdigest()
+
+            def replace_file(self, source, destination, overwrite=True):
+                replacements.append((source, destination))
+
+        request = self.factory.post('/file/uploads/%s/complete/' % transfer.id)
+        request.user = self.requester
+        with patch('apps.file.views.Host.get_ssh', return_value=CorruptSSHStub()):
+            response = UploadCompleteView.as_view()(request, upload_id=transfer.id)
+        body = json.loads(response.content.decode('utf-8'))
+        self.assertIn('SHA-256 校验失败', body['error'])
+        self.assertEqual(replacements, [])
+        self.assertEqual(remote_files[transfer.remote_path], b'original-content')
+        transfer.refresh_from_db()
+        self.assertEqual(transfer.status, 'failed')
+        self.assertTrue(AuditEvent.objects.filter(
+            correlation_id=approval.correlation_id,
+            action='file.write',
+            result='failed',
+        ).exists())
+
+    def test_sftp_replace_fallback_preserves_destination_until_rename(self):
+        class SFTPStub:
+            def __init__(self, posix_error):
+                self.files = {
+                    '/tmp/source.part': b'new',
+                    '/tmp/target.bin': b'old',
+                }
+                self.posix_error = posix_error
+
+            def posix_rename(self, source, destination):
+                raise self.posix_error
+
+            def stat(self, path):
+                if path not in self.files:
+                    raise IOError(errno.ENOENT, 'not found')
+                return object()
+
+            def rename(self, source, destination):
+                self.files[destination] = self.files.pop(source)
+
+            def remove(self, path):
+                self.files.pop(path)
+
+        unsupported = SFTPStub(IOError(errno.EOPNOTSUPP, 'Operation unsupported'))
+        ssh = SSH.__new__(SSH)
+        ssh.sftp = unsupported
+        ssh.replace_file('/tmp/source.part', '/tmp/target.bin', overwrite=True)
+        self.assertEqual(unsupported.files, {'/tmp/target.bin': b'new'})
+
+        denied = SFTPStub(IOError(errno.EACCES, 'Permission denied'))
+        ssh.sftp = denied
+        with self.assertRaises(IOError):
+            ssh.replace_file('/tmp/source.part', '/tmp/target.bin', overwrite=True)
+        self.assertEqual(denied.files['/tmp/source.part'], b'new')
+        self.assertEqual(denied.files['/tmp/target.bin'], b'old')
 
     def test_audit_chain_redacts_secrets_and_rejects_mutation(self):
         correlation_id = create_approval(
