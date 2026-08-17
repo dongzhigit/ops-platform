@@ -118,6 +118,25 @@ def requires_approval(risk_level):
     return risk_level in ('high', 'critical')
 
 
+def find_matching_approvals(*, requester, action, resource_type, resource_ids, payload):
+    normalized_ids = normalize_resource_ids(resource_ids)
+    payload_hash = operation_payload_hash(payload)
+    matches = []
+    approvals = ApprovalRequest.objects.select_related('requester', 'decided_by').filter(
+        requester=requester,
+        action=action,
+        resource_type=resource_type,
+        payload_hash=payload_hash,
+        status='approved',
+    )
+    for approval in approvals:
+        if approval.refresh_expiry_status():
+            continue
+        if normalize_resource_ids(approval.resource_id_list) == normalized_ids:
+            matches.append(approval)
+    return matches
+
+
 def request_source(request):
     if request is None:
         return {'source_ip': None, 'request_method': None, 'request_path': None}

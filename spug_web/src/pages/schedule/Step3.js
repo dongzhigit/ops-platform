@@ -3,6 +3,7 @@ import { observer } from 'mobx-react';
 import { Form, Tabs, DatePicker, InputNumber, Input, Button, message } from 'antd';
 import { LoadingOutlined } from '@ant-design/icons';
 import { http } from 'libs';
+import { ApprovalGate } from 'components';
 import store from './store';
 import moment from 'moment';
 import lds from 'lodash';
@@ -14,22 +15,48 @@ export default observer(function () {
   const [trigger, setTrigger] = useState(store.record.trigger);
   const [args, setArgs] = useState({[store.record.trigger]: store.record.trigger_args});
   const [nextRunTime, setNextRunTime] = useState(null);
+  const [approvalRequest, setApprovalRequest] = useState();
 
   function handleSubmit() {
     if (trigger === 'date' && args['date'] <= moment()) {
       return message.error('任务执行时间不能早于当前时间')
     }
+    const targets = store.targets.filter(x => x);
+    const triggerArgs = _parse_args();
+    const payload = {
+      host_ids: targets.filter(x => String(x) !== 'local').sort((a, b) => a - b),
+      targets,
+      name: store.record.name,
+      interpreter: store.record.interpreter,
+      command: store.record.command,
+      trigger,
+      trigger_args: triggerArgs,
+    }
+    setApprovalRequest({
+      operation: {
+        action: 'schedule.write',
+        resource_type: 'host',
+        resource_ids: targets,
+        payload,
+      },
+      formData: {
+        ...lds.pick(store.record, ['id', 'name', 'type', 'interpreter', 'command', 'desc', 'rst_notify']),
+        targets,
+        trigger,
+        trigger_args: triggerArgs,
+      },
+      summary: `${store.record.id ? '修改' : '创建'}计划任务：${store.record.name}`,
+    })
+  }
+
+  function saveSchedule(request, approvalId) {
     setLoading(true)
-    const formData = lds.pick(store.record, ['id', 'name', 'type', 'interpreter', 'command', 'desc', 'rst_notify']);
-    formData['targets'] = store.targets.filter(x => x);
-    formData['trigger'] = trigger;
-    formData['trigger_args'] = _parse_args();
-    http.post('/api/schedule/', formData)
-      .then(res => {
+    return http.post('/api/schedule/', {...request.formData, approval_id: approvalId})
+      .then(() => {
         message.success('操作成功');
-        store.formVisible = false;
         store.fetchRecords()
-      }, () => setLoading(false))
+      })
+      .finally(() => setLoading(false))
   }
 
   function handleArgs(key, val) {
@@ -55,7 +82,7 @@ export default observer(function () {
           stop: stop ? moment(stop).format('YYYY-MM-DD HH:mm:ss') : null
         });
       default:
-        return args[trigger];
+        return String(args[trigger]);
     }
   }
 
@@ -83,7 +110,8 @@ export default observer(function () {
   }
 
   return (
-    <Form layout="vertical" wrapperCol={{span: 14, offset: 6}}>
+    <React.Fragment>
+      <Form layout="vertical" wrapperCol={{span: 14, offset: 6}}>
       <Form.Item>
         <Tabs activeKey={trigger} onChange={setTrigger} tabPosition="left" style={{minHeight: 200}}>
           <Tabs.TabPane tab="普通间隔" key="interval">
@@ -138,6 +166,15 @@ export default observer(function () {
         <Button type="primary" loading={loading} disabled={!args[trigger]} onClick={handleSubmit}>提交</Button>
         <Button style={{marginLeft: 20}} onClick={() => store.page -= 1}>上一步</Button>
       </Form.Item>
-    </Form>
+      </Form>
+      {approvalRequest && (
+        <ApprovalGate
+          operation={approvalRequest.operation}
+          defaultSummary={approvalRequest.summary}
+          onCancel={() => setApprovalRequest()}
+          onComplete={() => store.formVisible = false}
+          onExecute={approvalId => saveSchedule(approvalRequest, approvalId)}/>
+      )}
+    </React.Fragment>
   )
 })

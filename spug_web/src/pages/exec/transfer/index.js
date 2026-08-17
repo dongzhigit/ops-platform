@@ -13,7 +13,7 @@ import {
   BulbOutlined,
 } from '@ant-design/icons';
 import { Form, Button, Tooltip, Space, Card, Table, Input, Upload, message } from 'antd';
-import { AuthDiv, Breadcrumb } from 'components';
+import { ApprovalGate, AuthDiv, Breadcrumb } from 'components';
 import HostSelector from 'pages/host/Selector';
 import Output from './Output';
 import { http, uniqueId } from 'libs';
@@ -29,6 +29,7 @@ function TransferIndex() {
   const [percent, setPercent] = useState()
   const [token, setToken] = useState()
   const [histories, setHistories] = useState([])
+  const [approvalRequest, setApprovalRequest] = useState()
 
   useEffect(() => {
     if (!loading) {
@@ -44,22 +45,54 @@ function TransferIndex() {
   }
 
   function handleSubmit() {
-    const formData = new FormData();
     if (files.length === 0) return message.error('请添加数据源')
     if (!dir) return message.error('请输入目标路径')
     if (hosts.length === 0) return message.error('请选择目标主机')
-    const data = {dst_dir: dir, host_ids: hosts.map(x => x.id)}
-    for (let index in files) {
-      const item = files[index]
+    const fileSnapshot = [...files];
+    const hostIds = hosts.map(x => x.id).sort((a, b) => a - b);
+    const hostSource = fileSnapshot.find(item => item.type === 'host');
+    const uploadedFiles = fileSnapshot
+      .filter(item => item.type === 'upload')
+      .map(item => ({name: item.path.name, size: item.path.size}))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    const payload = {
+      host_ids: hostIds,
+      dst_dir: dir,
+      source_host_id: hostSource ? hostSource.host_id : null,
+      source_path: hostSource ? hostSource.path : null,
+      uploaded_files: uploadedFiles,
+    }
+    setApprovalRequest({
+      operation: {
+        action: 'file.distribute',
+        resource_type: 'host',
+        resource_ids: hostIds,
+        payload,
+      },
+      files: fileSnapshot,
+      summary: `向 ${hostIds.length} 台主机分发文件至 ${dir}`,
+    })
+  }
+
+  function executeTransfer(request, approvalId) {
+    const formData = new FormData();
+    const data = {
+      dst_dir: request.operation.payload.dst_dir,
+      host_ids: request.operation.payload.host_ids,
+      approval_id: approvalId,
+    }
+    let uploadIndex = 0;
+    for (let item of request.files) {
       if (item.type === 'host') {
         data.host = JSON.stringify([item.host_id, item.path])
       } else {
-        formData.append(`file${index}`, item.path)
+        formData.append(`file${uploadIndex}`, item.path)
+        uploadIndex += 1
       }
     }
     formData.append('data', JSON.stringify(data))
     setLoading(true)
-    http.post('/api/exec/transfer/', formData, {timeout: 600000, onUploadProgress: _handleProgress})
+    return http.post('/api/exec/transfer/', formData, {timeout: 600000, onUploadProgress: _handleProgress})
       .then(res => {
         const tmp = {}
         for (let host of hosts) {
@@ -177,6 +210,13 @@ function TransferIndex() {
       </div>
     </div>
     {token ? <Output token={token} onBack={handleCloseOutput}/> : null}
+    {approvalRequest && (
+      <ApprovalGate
+        operation={approvalRequest.operation}
+        defaultSummary={approvalRequest.summary}
+        onCancel={() => setApprovalRequest()}
+        onExecute={approvalId => executeTransfer(approvalRequest, approvalId)}/>
+    )}
   </AuthDiv>)
 }
 

@@ -8,6 +8,7 @@ from unittest.mock import patch
 from django.core.management import call_command
 from django.conf import settings
 from django.test import RequestFactory, TestCase, override_settings
+from django.urls import resolve
 
 from apps.account.models import Role, User
 from apps.account.utils import has_host_perm
@@ -82,6 +83,10 @@ class AssetAccessTest(TestCase):
             last_login='',
             last_ip='127.0.0.1',
         )
+
+    def test_versioned_asset_route_matches_nginx_api_rewrite(self):
+        match = resolve('/v1/assets/credentials/')
+        self.assertIs(match.func.view_class, CredentialView)
 
     def make_credential(self, name='credential-1', secret=PRIVATE_KEY):
         return Credential.create_with_secret(

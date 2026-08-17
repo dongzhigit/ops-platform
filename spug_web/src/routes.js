@@ -14,6 +14,7 @@ import {
   DeploymentUnitOutlined,
   MonitorOutlined,
   AlertOutlined,
+  SafetyCertificateOutlined,
   SettingOutlined
 } from '@ant-design/icons';
 
@@ -39,6 +40,8 @@ import SystemAccount from './pages/system/account';
 import SystemRole from './pages/system/role';
 import SystemSetting from './pages/system/setting';
 import SystemLogin from './pages/system/login';
+import { MyApprovals, PendingApprovals } from './pages/security/approvals';
+import AuditEvents from './pages/security/audit';
 import WelcomeIndex from './pages/welcome/index';
 import WelcomeInfo from './pages/welcome/info';
 
@@ -87,6 +90,13 @@ export default [
       {title: '报警历史', auth: 'alarm.alarm.view', path: '/alarm/alarm', component: AlarmIndex},
       {title: '报警联系人', auth: 'alarm.contact.view', path: '/alarm/contact', component: AlarmContact},
       {title: '报警联系组', auth: 'alarm.group.view', path: '/alarm/group', component: AlarmGroup},
+    ]
+  },
+  {
+    icon: <SafetyCertificateOutlined/>, title: '安全中心', child: [
+      {title: '我的申请', path: '/security/approvals', component: MyApprovals},
+      {title: '待我审批', auth: 'admin', path: '/security/pending', component: PendingApprovals},
+      {title: '审计日志', auth: 'admin', path: '/security/audit', component: AuditEvents},
     ]
   },
   {

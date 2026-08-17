@@ -28,7 +28,7 @@ docker compose ps
 docker exec spug init_spug admin '请替换为高强度密码'
 ```
 
-资产凭据、对象授权、旧私钥迁移和主密钥轮换说明见 [M1 资产、凭据与对象授权](../M1_ASSET_ACCESS.md)。
+资产凭据、对象授权、旧私钥迁移和主密钥轮换说明见 [M1 资产、凭据与对象授权](../M1_ASSET_ACCESS.md)，高风险操作流程见 [M1 高风险操作审批与审计](../M1_APPROVAL_AUDIT.md)。
 
 ## 网络与 TLS
 

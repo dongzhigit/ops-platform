@@ -19,8 +19,9 @@ Including another URLconf
 from django.urls import path, include
 
 urlpatterns = [
-    path('api/v1/audit/', include('apps.audit.urls')),
-    path('api/v1/assets/', include('apps.assets.urls')),
+    # Nginx removes the public /api prefix before proxying to Django.
+    path('v1/audit/', include('apps.audit.urls')),
+    path('v1/assets/', include('apps.assets.urls')),
     path('account/', include('apps.account.urls')),
     path('host/', include('apps.host.urls')),
     path('exec/', include('apps.exec.urls')),

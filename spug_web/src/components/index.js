@@ -17,6 +17,7 @@ import Breadcrumb from './Breadcrumb';
 import AppSelector from './AppSelector';
 import NotFound from './NotFound';
 import Link from './Link';
+import ApprovalGate from './ApprovalGate';
 
 export {
   StatisticsCard,
@@ -33,4 +34,5 @@ export {
   AppSelector,
   NotFound,
   Link,
+  ApprovalGate,
 }

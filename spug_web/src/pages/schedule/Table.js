@@ -7,12 +7,14 @@ import React from 'react';
 import { observer } from 'mobx-react';
 import { DownOutlined, PlusOutlined } from '@ant-design/icons';
 import { Modal, Tag, Dropdown, Menu, Radio, message } from 'antd';
-import { LinkButton, Action, TableCard, AuthButton } from 'components';
+import { ApprovalGate, LinkButton, Action, TableCard, AuthButton } from 'components';
 import { http } from 'libs';
 import store from './store';
 
 @observer
 class ComTable extends React.Component {
+  state = {approvalRequest: null};
+
   componentDidMount() {
     store.fetchRecords()
   }
@@ -89,25 +91,61 @@ class ComTable extends React.Component {
       title: '操作确认',
       content: `确定要${text.is_active ? '禁用' : '激活'}任务【${text['name']}】?`,
       onOk: () => {
-        return http.patch('/api/schedule/', {id: text.id, is_active: !text.is_active})
-          .then(() => {
-            message.success('操作成功');
-            store.fetchRecords()
-          })
+        if (text.is_active) return this.updateActive(text)
+        const targets = text.targets;
+        const hostIds = targets.filter(x => String(x) !== 'local').sort((a, b) => a - b);
+        const triggerArgs = text.trigger === 'cron' ? JSON.stringify(text.trigger_args) : text.trigger_args;
+        this.openApproval({
+          action: 'schedule.run',
+          resource_type: 'host',
+          resource_ids: targets,
+          payload: {
+            host_ids: hostIds,
+            task_id: text.id,
+            interpreter: text.interpreter,
+            command: text.command,
+            targets,
+            trigger: text.trigger,
+            trigger_args: triggerArgs,
+          },
+        }, `启用计划任务：${text.name}`, approvalId => this.updateActive(text, approvalId))
       }
     })
   };
 
+  updateActive = (text, approvalId) => http.patch('/api/schedule/', {
+    id: text.id,
+    is_active: !text.is_active,
+    approval_id: approvalId,
+  }).then(() => {
+    message.success('操作成功');
+    store.fetchRecords()
+  });
+
+  openApproval = (operation, summary, execute) => {
+    this.setState({approvalRequest: {operation, summary, execute}})
+  };
+
   handleDelete = (text) => {
+    if (text.is_active) return message.error('请先禁用任务，再执行删除')
     Modal.confirm({
       title: '删除确认',
       content: `确定要删除【${text['name']}】?`,
       onOk: () => {
-        return http.delete('/api/schedule/', {params: {id: text.id}})
-          .then(() => {
-            message.success('删除成功');
-            store.fetchRecords()
-          })
+        const targets = text.targets;
+        const hostIds = targets.filter(x => String(x) !== 'local').sort((a, b) => a - b);
+        this.openApproval({
+          action: 'schedule.write',
+          resource_type: 'host',
+          resource_ids: targets,
+          payload: {host_ids: hostIds, task_id: text.id, mode: 'delete'},
+        }, `删除计划任务：${text.name}`, approvalId => (
+          http.delete('/api/schedule/', {params: {id: text.id, approval_id: approvalId}})
+            .then(() => {
+              message.success('删除成功');
+              store.fetchRecords()
+            })
+        ))
       }
     })
   };
@@ -116,14 +154,34 @@ class ComTable extends React.Component {
     Modal.confirm({
       title: '操作确认',
       content: '立即以串行模式执行该任务（不影响调度规则，且不会触发失败通知，测试执行会有120秒的超时，真实调度执行无此限制）？',
-      onOk: () => http.post(`/api/schedule/${text.id}/`, null, {timeout: 120000})
-        .then(res => store.showInfo(text, res))
+      onOk: () => {
+        const targets = text.targets;
+        const hostIds = targets.filter(x => String(x) !== 'local').sort((a, b) => a - b);
+        this.openApproval({
+          action: 'schedule.run',
+          resource_type: 'host',
+          resource_ids: targets,
+          payload: {
+            host_ids: hostIds,
+            task_id: text.id,
+            interpreter: text.interpreter,
+            command: text.command,
+            targets,
+            mode: 'manual',
+          },
+        }, `手动测试计划任务：${text.name}`, approvalId => (
+          http.post(`/api/schedule/${text.id}/`, {approval_id: approvalId}, {timeout: 120000})
+            .then(res => store.showInfo(text, res))
+        ))
+      }
     })
   };
 
   render() {
+    const {approvalRequest} = this.state;
     return (
-      <TableCard
+      <React.Fragment>
+        <TableCard
         tKey="si"
         rowKey="id"
         title="任务列表"
@@ -148,7 +206,15 @@ class ComTable extends React.Component {
           showTotal: total => `共 ${total} 条`,
           pageSizeOptions: ['10', '20', '50', '100']
         }}
-        columns={this.columns}/>
+          columns={this.columns}/>
+        {approvalRequest && (
+          <ApprovalGate
+            operation={approvalRequest.operation}
+            defaultSummary={approvalRequest.summary}
+            onCancel={() => this.setState({approvalRequest: null})}
+            onExecute={approvalRequest.execute}/>
+        )}
+      </React.Fragment>
     )
   }
 }

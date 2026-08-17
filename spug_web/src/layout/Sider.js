@@ -25,7 +25,7 @@ export default function Sider(props) {
     const tmp = []
     for (let item of routes) {
       const menu = handleRoute(item)
-      tmp.push(menu)
+      if (menu) tmp.push(menu)
     }
     setMenus(tmp)
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -39,7 +39,7 @@ export default function Sider(props) {
       menu.children = []
       for (let sub of item.child) {
         const subMenu = handleRoute(sub)
-        menu.children.push(subMenu)
+        if (subMenu) menu.children.push(subMenu)
       }
     }
     return menu

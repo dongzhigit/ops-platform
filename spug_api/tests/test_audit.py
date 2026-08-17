@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 from django.core.exceptions import ValidationError
 from django.test import RequestFactory, TestCase
+from django.urls import resolve
 
 from apps.account.models import User
 from apps.audit.models import ApprovalRequest, AuditEvent
@@ -16,6 +17,7 @@ from apps.audit.services import (
     record_event,
     verify_audit_chain,
 )
+from apps.audit.views import OperationPreviewView
 from apps.exec.models import ExecHistory
 from apps.exec.views import TaskView
 from apps.host.models import Host
@@ -43,6 +45,16 @@ class AuditApprovalTest(TestCase):
             last_ip='127.0.0.1',
         )
 
+    def preview_operation(self, user, operation):
+        request = self.factory.post(
+            '/audit/preview/',
+            data=json.dumps(operation),
+            content_type='application/json',
+        )
+        request.user = user
+        response = OperationPreviewView.as_view()(request)
+        return json.loads(response.content.decode('utf-8'))
+
     def test_server_side_risk_classification_cannot_be_downgraded(self):
         self.assertEqual(assess_risk('exec.run', {'command': 'uptime'}), 'medium')
         self.assertEqual(assess_risk('exec.run', {'command': 'sudo systemctl restart nginx'}), 'high')
@@ -51,6 +63,92 @@ class AuditApprovalTest(TestCase):
             assess_risk('exec.run', {'command': 'uptime', 'host_ids': list(range(50))}),
             'critical',
         )
+
+    def test_versioned_audit_route_matches_nginx_api_rewrite(self):
+        match = resolve('/v1/audit/preview/')
+        self.assertIs(match.func.view_class, OperationPreviewView)
+
+    def test_operation_preview_classifies_risk_and_finds_exact_approval(self):
+        medium_operation = {
+            'action': 'exec.run',
+            'resource_type': 'host',
+            'resource_ids': [2, 1],
+            'payload': {
+                'host_ids': [1, 2],
+                'command': 'uptime',
+                'interpreter': 'sh',
+                'template_id': None,
+                'params': {},
+            },
+        }
+        medium = self.preview_operation(self.requester, medium_operation)
+        self.assertFalse(medium['error'])
+        self.assertEqual(medium['data']['risk_level'], 'medium')
+        self.assertFalse(medium['data']['approval_required'])
+        self.assertEqual(medium['data']['matching_approvals'], [])
+
+        high_operation = dict(medium_operation)
+        high_operation['payload'] = dict(
+            medium_operation['payload'], command='sudo systemctl restart nginx'
+        )
+        high = self.preview_operation(self.requester, high_operation)
+        self.assertFalse(high['error'])
+        self.assertEqual(high['data']['risk_level'], 'high')
+        self.assertTrue(high['data']['approval_required'])
+        self.assertEqual(high['data']['matching_approvals'], [])
+
+        approval = create_approval(
+            requester=self.requester,
+            action=high_operation['action'],
+            resource_type=high_operation['resource_type'],
+            resource_ids=high_operation['resource_ids'],
+            payload=high_operation['payload'],
+            summary='重启 nginx',
+        )
+        decide_approval(
+            approval_id=approval.id,
+            approver=self.approver,
+            is_pass=True,
+        )
+        approved = self.preview_operation(self.requester, high_operation)
+        self.assertEqual(
+            [item['id'] for item in approved['data']['matching_approvals']],
+            [str(approval.id)],
+        )
+
+        changed_operation = dict(high_operation)
+        changed_operation['payload'] = dict(high_operation['payload'], params={'service': 'sshd'})
+        changed = self.preview_operation(self.requester, changed_operation)
+        self.assertEqual(changed['data']['matching_approvals'], [])
+
+        ApprovalRequest.objects.filter(pk=approval.id).update(
+            approved_until=datetime.now() - timedelta(seconds=1)
+        )
+        expired = self.preview_operation(self.requester, high_operation)
+        self.assertEqual(expired['data']['matching_approvals'], [])
+        approval.refresh_from_db()
+        self.assertEqual(approval.status, 'expired')
+
+    def test_operation_preview_rejects_unauthorized_host_and_local_scope(self):
+        user = self.make_user('limited-user')
+        operation = {
+            'action': 'exec.run',
+            'resource_type': 'host',
+            'resource_ids': [99],
+            'payload': {'host_ids': [99], 'command': 'uptime'},
+        }
+        with patch('apps.audit.views.has_host_perm', return_value=False):
+            denied = self.preview_operation(user, operation)
+        self.assertIn('无权为目标主机申请', denied['error'])
+
+        local_operation = {
+            'action': 'schedule.write',
+            'resource_type': 'host',
+            'resource_ids': ['local'],
+            'payload': {'host_ids': [], 'targets': ['local'], 'command': 'uptime'},
+        }
+        denied_local = self.preview_operation(user, local_operation)
+        self.assertIn('只有系统管理员', denied_local['error'])
 
     def test_approval_is_two_person_payload_bound_and_single_use(self):
         payload = {'host_ids': [3, 2], 'command': 'sudo systemctl restart nginx'}

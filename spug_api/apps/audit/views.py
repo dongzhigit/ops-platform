@@ -11,6 +11,9 @@ from .services import (
     cancel_approval,
     create_approval,
     decide_approval,
+    assess_risk,
+    find_matching_approvals,
+    requires_approval,
     verify_audit_chain,
 )
 
@@ -19,6 +22,19 @@ HOST_PERMISSION_ACTIONS = {
     'file.delete': 'file.write',
     'schedule.write': 'schedule.run',
 }
+
+
+def _validate_host_scope(user, resource_type, resource_ids, action):
+    if resource_type != 'host':
+        return None
+    permission_action = HOST_PERMISSION_ACTIONS.get(action, action)
+    local_targets = [item for item in resource_ids if str(item) == 'local']
+    host_targets = [item for item in resource_ids if str(item) != 'local']
+    if local_targets and not user.is_supper:
+        return '只有系统管理员可以申请在平台本机执行任务'
+    if host_targets and not has_host_perm(user, host_targets, action=permission_action):
+        return '无权为目标主机申请该操作'
+    return None
 
 
 class ApprovalView(View):
@@ -50,14 +66,11 @@ class ApprovalView(View):
         if error:
             return json_response(error=error)
 
-        if form.resource_type == 'host':
-            permission_action = HOST_PERMISSION_ACTIONS.get(form.action, form.action)
-            local_targets = [item for item in form.resource_ids if str(item) == 'local']
-            host_targets = [item for item in form.resource_ids if str(item) != 'local']
-            if local_targets and not request.user.is_supper:
-                return json_response(error='只有系统管理员可以申请在平台本机执行任务')
-            if host_targets and not has_host_perm(request.user, host_targets, action=permission_action):
-                return json_response(error='无权为目标主机申请该操作')
+        scope_error = _validate_host_scope(
+            request.user, form.resource_type, form.resource_ids, form.action
+        )
+        if scope_error:
+            return json_response(error=scope_error)
         try:
             approval = create_approval(
                 requester=request.user,
@@ -84,6 +97,37 @@ class ApprovalView(View):
         except ApprovalError as exc:
             return json_response(error=exc.message)
         return json_response()
+
+
+class OperationPreviewView(View):
+    def post(self, request):
+        form, error = JsonParser(
+            Argument('action', filter=lambda x: x in APPROVABLE_ACTIONS, help='不支持的审批动作'),
+            Argument('resource_type', filter=lambda x: x in ('host', 'host_group', 'deploy', 'schedule')),
+            Argument('resource_ids', type=list, filter=lambda x: len(x) <= 500, help='操作对象数量超限'),
+            Argument('payload', type=dict, help='请输入结构化操作参数'),
+        ).parse(request.body)
+        if error:
+            return json_response(error=error)
+        scope_error = _validate_host_scope(
+            request.user, form.resource_type, form.resource_ids, form.action
+        )
+        if scope_error:
+            return json_response(error=scope_error)
+        risk_level = assess_risk(form.action, form.payload, len(form.resource_ids))
+        matches = find_matching_approvals(
+            requester=request.user,
+            action=form.action,
+            resource_type=form.resource_type,
+            resource_ids=form.resource_ids,
+            payload=form.payload,
+        ) if requires_approval(risk_level) else []
+        return json_response({
+            'risk_level': risk_level,
+            'approval_required': requires_approval(risk_level),
+            'rollback_required': risk_level == 'critical',
+            'matching_approvals': [item.to_view() for item in matches],
+        })
 
 
 class ApprovalDecisionView(AdminView):
