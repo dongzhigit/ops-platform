@@ -155,6 +155,13 @@ export default [{
       {key: 'edit', label: '编辑监控'},
       {key: 'del', label: '删除监控'},
     ]
+  }, {
+    key: 'metrics',
+    label: '主机指标',
+    perms: [
+      {key: 'view', label: '查看指标'},
+      {key: 'manage', label: '配置采集目标'},
+    ]
   }]
 }, {
   key: 'alarm',
@@ -164,6 +171,14 @@ export default [{
     label: '报警记录',
     perms: [
       {key: 'view', label: '查看记录'}
+    ]
+  }, {
+    key: 'event',
+    label: '指标告警事件',
+    perms: [
+      {key: 'view', label: '查看事件'},
+      {key: 'claim', label: '认领事件'},
+      {key: 'silence', label: '静默事件'},
     ]
   }, {
     key: 'contact',

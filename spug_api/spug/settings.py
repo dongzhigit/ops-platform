@@ -41,6 +41,7 @@ INSTALLED_APPS = [
     'apps.audit',
     'apps.assets',
     'apps.gateway',
+    'apps.observability',
     'apps.file',
     'apps.host',
     'apps.setting',
@@ -139,10 +140,12 @@ AUTHENTICATION_EXCLUDES = (
     '/setting/basic/',
     re.compile('/apis/.*'),
     re.compile(r'^/v1/gateway/sessions/[0-9a-f-]+/launch/$'),
+    re.compile(r'^/v1/observability/discovery/targets/$'),
+    re.compile(r'^/v1/observability/alertmanager/webhook/$'),
 )
 
 SPUG_VERSION = 'v3.4.0'
-OPS_PLATFORM_VERSION = os.environ.get('OPS_PLATFORM_VERSION', '0.1.0-alpha.9')
+OPS_PLATFORM_VERSION = os.environ.get('OPS_PLATFORM_VERSION', '0.1.0-alpha.10')
 
 # override default config
 try:
@@ -166,10 +169,18 @@ SPUG_CREDENTIAL_MASTER_KEYS = _security['credential_master_keys']
 SPUG_CREDENTIAL_PRIMARY_KEY_ID = _security['credential_primary_key_id']
 SPUG_AUDIT_SIGNING_KEY = _security['audit_signing_key']
 SPUG_REMOTE_GATEWAY_ENABLED = _security['remote_gateway_enabled']
+SPUG_OBSERVABILITY_ENABLED = _security['observability_enabled']
 SPUG_GUACAMOLE_JSON_SECRET_KEY = _security['guacamole_json_secret_key']
 SPUG_GUACAMOLE_PUBLIC_URL = _security['guacamole_public_url']
 SPUG_REMOTE_TICKET_TTL = _security['remote_ticket_ttl']
 SPUG_GUACAMOLE_AUTH_TTL = _security['guacamole_auth_ttl']
+SPUG_PROMETHEUS_DISCOVERY_TOKEN = _security['prometheus_discovery_token']
+SPUG_ALERTMANAGER_WEBHOOK_TOKEN = _security['alertmanager_webhook_token']
+SPUG_PROMETHEUS_URL = _security['prometheus_url']
+SPUG_ALERTMANAGER_URL = _security['alertmanager_url']
+SPUG_OBSERVABILITY_REQUEST_TIMEOUT = _security['observability_request_timeout']
+SPUG_ALERTMANAGER_MAX_BODY = _security['alertmanager_max_body']
+SPUG_ALERT_RETENTION_DAYS = _security['alert_retention_days']
 SECRET_KEY = _security['secret_key']
 DEBUG = _security['debug']
 ALLOWED_HOSTS = _security['allowed_hosts']

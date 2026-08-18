@@ -84,10 +84,10 @@ export default [
       {path: '/config/setting/:type/:id', component: ConfigSetting},
     ]
   },
-  {icon: <MonitorOutlined/>, title: '监控中心', auth: 'monitor.monitor.view', path: '/monitor', component: MonitorIndex},
+  {icon: <MonitorOutlined/>, title: '监控中心', auth: 'monitor.monitor.view|monitor.metrics.view', path: '/monitor', component: MonitorIndex},
   {
-    icon: <AlertOutlined/>, title: '报警中心', auth: 'alarm.alarm.view|alarm.contact.view|alarm.group.view', child: [
-      {title: '报警历史', auth: 'alarm.alarm.view', path: '/alarm/alarm', component: AlarmIndex},
+    icon: <AlertOutlined/>, title: '报警中心', auth: 'alarm.alarm.view|alarm.event.view|alarm.contact.view|alarm.group.view', child: [
+      {title: '报警工作台', auth: 'alarm.alarm.view|alarm.event.view', path: '/alarm/alarm', component: AlarmIndex},
       {title: '报警联系人', auth: 'alarm.contact.view', path: '/alarm/contact', component: AlarmContact},
       {title: '报警联系组', auth: 'alarm.group.view', path: '/alarm/group', component: AlarmGroup},
     ]

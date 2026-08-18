@@ -103,14 +103,20 @@ def monitor_worker_handler(job):
             rds.hdel(key, f_count, f_time)
         if v_time:
             logging.warning('send recovery notification')
-            handle_notify(task_id, target, is_ok, message, int(v_count) + 1)
+            handle_notify(
+                task_id, target, is_ok, message, int(v_count) + 1,
+                host_id=addr if tp in ('3', '4') else None,
+            )
         return
     v_count = rds.hincrby(key, f_count)
     if v_count >= threshold:
         if not v_time or int(time.time()) - int(v_time) >= quiet * 60:
             rds.hset(key, f_time, int(time.time()))
             logging.warning('send fault alarm notification')
-            handle_notify(task_id, target, is_ok, message, v_count)
+            handle_notify(
+                task_id, target, is_ok, message, v_count,
+                host_id=addr if tp in ('3', '4') else None,
+            )
 
 
 def dispatch(tp, addr, extra):

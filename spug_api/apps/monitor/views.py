@@ -16,9 +16,18 @@ import json
 class DetectionView(View):
     @auth('dashboard.dashboard.view|monitor.monitor.view')
     def get(self, request):
-        detections = Detection.objects.all()
-        groups = [x['group'] for x in detections.order_by('group').values('group').distinct()]
-        return json_response({'groups': groups, 'detections': [x.to_view() for x in detections]})
+        detections = []
+        groups = set()
+        for item in Detection.objects.all():
+            if item.type in ('3', '4') and not has_host_perm(
+                    request.user, json.loads(item.targets), action='monitor.run'):
+                continue
+            detections.append(item.to_view())
+            groups.add(item.group)
+        return json_response({
+            'groups': sorted(groups, key=lambda x: x or ''),
+            'detections': detections,
+        })
 
     @auth('monitor.monitor.add|monitor.monitor.edit')
     def post(self, request):
@@ -37,6 +46,12 @@ class DetectionView(View):
             Argument('notify_mode', type=list, help='请选择报警方式'),
         ).parse(request.body)
         if error is None:
+            existing = Detection.objects.filter(pk=form.id).first() if form.id else None
+            if form.id and existing is None:
+                return json_response(error='未找到指定监控任务')
+            if existing and existing.type in ('3', '4') and not has_host_perm(
+                    request.user, json.loads(existing.targets), action='monitor.run'):
+                return json_response(error='无权修改该监控任务')
             if form.type in ('3', '4') and not has_host_perm(
                     request.user, form.targets, action='monitor.run'):
                 return json_response(error='无权在目标主机创建监控任务，请联系管理员')
@@ -75,6 +90,9 @@ class DetectionView(View):
             task = Detection.objects.filter(pk=form.id).first()
             if not task:
                 return json_response(error='未找到指定监控任务')
+            if task.type in ('3', '4') and not has_host_perm(
+                    request.user, json.loads(task.targets), action='monitor.run'):
+                return json_response(error='无权操作该监控任务')
             if form.get('is_active') and task.type in ('3', '4') and not has_host_perm(
                     request.user, json.loads(task.targets), action='monitor.run'):
                 return json_response(error='无权在目标主机启用监控任务，请联系管理员')
@@ -97,6 +115,9 @@ class DetectionView(View):
         if error is None:
             task = Detection.objects.filter(pk=form.id).first()
             if task:
+                if task.type in ('3', '4') and not has_host_perm(
+                        request.user, json.loads(task.targets), action='monitor.run'):
+                    return json_response(error='无权删除该监控任务')
                 if task.is_active:
                     return json_response(error='该监控项正在运行中，请先停止后再尝试删除')
                 task.delete()
@@ -124,6 +145,9 @@ def get_overview(request):
     response = []
     rds = get_redis_connection()
     for item in Detection.objects.all():
+        if item.type in ('3', '4') and not has_host_perm(
+                request.user, json.loads(item.targets), action='monitor.run'):
+            continue
         data = {}
         for key in json.loads(item.targets):
             key = str(key)

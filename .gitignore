@@ -3,3 +3,4 @@
 # Local Docker deployment state and secrets.
 /docs/docker/.env
 /docs/docker/data/
+/docs/docker/secrets/

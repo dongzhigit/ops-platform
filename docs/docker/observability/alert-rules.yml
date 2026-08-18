@@ -1,0 +1,38 @@
+groups:
+  - name: spug-host-baseline
+    rules:
+      - alert: SpugHostExporterDown
+        expr: up{job="spug-node"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "主机 {{ $labels.spug_host_name }} 指标采集离线"
+          description: "Prometheus 连续 2 分钟无法抓取 node_exporter。"
+
+      - alert: SpugHostCpuHigh
+        expr: 100 - (avg by (spug_host_id, spug_host_name, instance) (rate(node_cpu_seconds_total{job="spug-node",mode="idle"}[5m])) * 100) > 90
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "主机 {{ $labels.spug_host_name }} CPU 使用率持续过高"
+          description: "CPU 使用率已连续 10 分钟高于 90%，当前值 {{ printf \"%.1f\" $value }}%。"
+
+      - alert: SpugHostMemoryHigh
+        expr: 100 * (1 - (node_memory_MemAvailable_bytes{job="spug-node"} / node_memory_MemTotal_bytes{job="spug-node"})) > 90
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "主机 {{ $labels.spug_host_name }} 内存使用率持续过高"
+          description: "内存使用率已连续 10 分钟高于 90%，当前值 {{ printf \"%.1f\" $value }}%。"
+
+      - alert: SpugHostDiskHigh
+        expr: 100 * (1 - (node_filesystem_avail_bytes{job="spug-node",fstype!~"tmpfs|overlay|squashfs|nsfs|erofs|fakeowner|fuse.*"} / node_filesystem_size_bytes{job="spug-node",fstype!~"tmpfs|overlay|squashfs|nsfs|erofs|fakeowner|fuse.*"})) > 90
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: "主机 {{ $labels.spug_host_name }} 磁盘空间不足"
+          description: "挂载点 {{ $labels.mountpoint }} 使用率已连续 15 分钟高于 90%，当前值 {{ printf \"%.1f\" $value }}%。"

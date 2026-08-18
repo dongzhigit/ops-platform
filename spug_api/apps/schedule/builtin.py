@@ -10,6 +10,7 @@ from apps.deploy.models import DeployRequest
 from apps.app.models import DeployExtend1
 from apps.exec.models import ExecHistory, Transfer
 from apps.notify.models import Notify
+from apps.observability.models import AlertEvent
 from apps.deploy.utils import dispatch
 from apps.repository.models import Repository
 from libs.utils import parse_time, human_datetime, human_date
@@ -28,6 +29,12 @@ def auto_run_by_day():
         History.objects.filter(created_at__lt=date_30).delete()
         Notify.objects.filter(created_at__lt=date_7, unread=False).delete()
         Alarm.objects.filter(created_at__lt=date_30).delete()
+        alert_deadline = datetime.now() - timedelta(
+            days=settings.SPUG_ALERT_RETENTION_DAYS
+        )
+        AlertEvent.objects.filter(
+            status='resolved', ends_at__lt=alert_deadline
+        ).delete()
         for item in DeployExtend1.objects.all():
             index = 0
             for req in DeployRequest.objects.filter(deploy_id=item.deploy_id, repository_id__isnull=False):

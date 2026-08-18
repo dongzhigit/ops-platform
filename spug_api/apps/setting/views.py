@@ -115,6 +115,7 @@ def get_about(request):
         'python_version': platform.python_version(),
         'system_version': platform.platform(),
         'spug_version': settings.SPUG_VERSION,
+        'ops_platform_version': settings.OPS_PLATFORM_VERSION,
         'django_version': django.get_version()
     })
 

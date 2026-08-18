@@ -61,6 +61,7 @@ class About extends React.Component {
           <Descriptions.Item label="操作系统">{info['system_version']}</Descriptions.Item>
           <Descriptions.Item label="Python版本">{info['python_version']}</Descriptions.Item>
           <Descriptions.Item label="Django版本">{info['django_version']}</Descriptions.Item>
+          <Descriptions.Item label="运维平台版本">{info['ops_platform_version']}</Descriptions.Item>
           <Descriptions.Item label="Spug API版本">{info['spug_version']}</Descriptions.Item>
           <Descriptions.Item label="Spug Web版本">{VERSION}</Descriptions.Item>
           <Descriptions.Item label="官网文档">

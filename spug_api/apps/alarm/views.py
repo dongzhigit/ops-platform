@@ -2,12 +2,14 @@
 # Copyright: (c) <spug.dev@gmail.com>
 # Released under the AGPL-3.0 License.
 from django.views.generic import View
+from django.db.models import Q
 from libs import json_response, JsonParser, Argument, auth
 from libs.spug import Notification
 from libs.push import get_contacts
 from apps.alarm.models import Alarm, Group, Contact
 from apps.monitor.models import Detection
 from apps.setting.utils import AppSetting
+from apps.account.utils import get_host_perms
 import json
 
 
@@ -15,11 +17,17 @@ class AlarmView(View):
     @auth('alarm.alarm.view')
     def get(self, request):
         alarms = Alarm.objects.all()
+        if not request.user.is_supper:
+            host_ids = get_host_perms(request.user, action='monitor.run')
+            alarms = alarms.filter(
+                Q(host_id__in=host_ids) |
+                (Q(host_id__isnull=True) & ~Q(type__in=('进程检测', '自定义脚本')))
+            )
         return json_response(alarms)
 
 
 class GroupView(View):
-    @auth('alarm.group.view|monitor.monitor.add|monitor.monitor.edit|alarm.alarm.view')
+    @auth('alarm.group.view|monitor.monitor.add|monitor.monitor.edit|monitor.metrics.manage|alarm.alarm.view')
     def get(self, request):
         groups = Group.objects.all()
         return json_response(groups)

@@ -21,23 +21,24 @@ def seconds_to_human(seconds):
     return text
 
 
-def _record_alarm(det, target, duration, status):
+def _record_alarm(det, target, duration, status, host_id=None):
     Alarm.objects.create(
         name=det.name,
         type=det.get_type_display(),
         target=target,
+        host_id=host_id,
         status=status,
         duration=duration,
         notify_grp=det.notify_grp,
         notify_mode=det.notify_mode)
 
 
-def handle_notify(task_id, target, is_ok, out, fault_times):
+def handle_notify(task_id, target, is_ok, out, fault_times, host_id=None):
     close_old_connections()
     det = Detection.objects.get(pk=task_id)
     duration = seconds_to_human(det.rate * fault_times * 60)
     event = '2' if is_ok else '1'
-    _record_alarm(det, target, duration, event)
+    _record_alarm(det, target, duration, event, host_id=host_id)
     grp = json.loads(det.notify_grp)
     notify = Notification(grp, event, target, det.name, out, duration)
     notify.dispatch_monitor(json.loads(det.notify_mode))

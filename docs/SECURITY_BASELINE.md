@@ -6,7 +6,7 @@
 
 M0 过渡镜像已经可以重复构建，但尚不满足正式生产发布条件。它可用于隔离内网中的兼容性验证，不应直接暴露到公网。
 
-Trivy 0.65.0 对 `spug-ops:0.1.0-alpha.9` 的严重和高危漏洞复扫结果如下。数量是漏洞在软件包中的出现次数，并非去重后的 CVE 数量；漏洞库更新后数字可能变化。“有修复版本”指 Trivy 状态为 `fixed` 且给出了修复版本的项目。
+Trivy 0.65.0 对 `spug-ops:0.1.0-alpha.10` 的严重和高危漏洞复扫结果如下。数量是漏洞在软件包中的出现次数，并非去重后的 CVE 数量；漏洞库更新后数字可能变化。“有修复版本”指 Trivy 状态为 `fixed` 且给出了修复版本的项目。
 
 | 层级 | 严重 | 高危 | 有修复版本 |
 | --- | ---: | ---: | ---: |
@@ -26,18 +26,31 @@ Dockerfile 纳入 CentOS 7 最终安全更新后，操作系统层严重漏洞�
 
 这些版本无法在当前 Python 3.6 技术栈中安全原地升级，必须通过 Python、Django 和相关 Channels 依赖的升级分支统一解决。
 
+## 可观测性辅助镜像扫描
+
+alpha.10 在固定旧版本的初次扫描中发现 Go 运行时严重漏洞，因此发布配置已升级到扫描时官方可用的最新固定版本。最终纳入默认 Compose 的结果如下：
+
+| 镜像 | 严重 | 高危 | 有修复版本 | 结论 |
+| --- | ---: | ---: | ---: | --- |
+| `prom/prometheus:v3.14.0` | 0 | 0 | 0 | 本次门禁通过 |
+| `prom/alertmanager:v0.34.0` | 0 | 0 | 0 | 本次门禁通过 |
+| `prom/node-exporter:v1.12.1` | 0 | 8 | 8 | 官方最新镜像仍使用 Go 1.26.5，需等待或重建为 1.26.6+ |
+
+评估过但未纳入部署栈的 `prom/blackbox-exporter:v0.28.0` 为 2 个严重、36 个高危，38 项均有修复版本。它同时命中 Go TLS 漏洞和 gRPC 授权绕过，且当前功能并未使用该组件，因此没有让一个闲置且已知脆弱的服务随默认 Compose 启动；站点、端口和 Ping 继续使用现有兼容探测器。
+
 ## 已通过的检查
 
-- 环境安全配置与远程网关单元/集成测试：21 项通过。
-- MariaDB 10.11 全量测试：82 项通过、2 项按外部环境条件跳过；新增覆盖端点参数白名单、票据哈希/格式/过期/单次消费、错误票据不消费、授权撤销二次校验、端点身份变更失效、Scheduler 过期清理和审计脱敏。
+- 环境安全配置、远程网关和可观测性单元/集成测试全部通过。
+- MariaDB 10.11 全量测试：91 项通过、2 项按外部环境条件跳过。覆盖既有端点参数白名单、票据安全、授权撤销、Scheduler 清理和审计脱敏，并新增服务 Bearer Token、预定义 PromQL、对象授权、告警 episode 聚合/恢复、认领、真实静默和时区校验。
 - Apache Guacamole 1.6.0 官方容器 JSON 认证集成测试通过：本项目生成的 HMAC-SHA256 + AES-128-CBC 密文直接和经 Spug Nginx 代理提交到 `/api/tokens` 均返回有效认证令牌。
 - 真实 OpenSSH SFTP 集成测试通过：除两文件并发分片、暂停恢复、损坏重试和取消清理外，还验证了 UTF-8 文件在线读取、审批保存、远端 SHA-256 以及 POSIX mode/UID/GID 保留。
 - React 生产构建通过；RDP/VNC 入口、端点配置以及既有安全中心、SFTP 和审批界面均已纳入最终镜像构建产物。
+- React 生产构建还包含主机指标总览、1/6/24 小时趋势、采集目标配置和指标告警工作台。
 - 全量 Django 迁移基线可在 MariaDB 空库安装到 `gateway.0001` 与 `audit.0002`，模型漂移检查通过。
 - Python 源码编译检查通过。
 - Docker Compose 配置解析通过。
-- `linux/amd64` alpha.9 镜像完整构建通过，OCI 版本标签和应用版本均为 `0.1.0-alpha.9`，镜像包含当前仓库后端和镜像构建阶段重新编译的前端。
-- alpha.9 镜像在 MariaDB 启动并自动迁移；Nginx、API、WebSocket、Worker、Scheduler 和 Monitor 全部运行。Guacamole 代理返回 200，网关 API 未登录返回 401，无效匿名启动票据返回 404；启动和 `data` 查询字符串不进入内置 Nginx 访问日志，响应带 `no-store` 与 `no-referrer`。
+- `linux/amd64` alpha.10 镜像完整构建通过，OCI 版本标签和应用版本均为 `0.1.0-alpha.10`，镜像包含当前仓库后端和镜像构建阶段重新编译的前端。
+- alpha.10 全量 Compose 在 MariaDB 自动迁移后健康启动；Prometheus HTTP 服务发现真实抓取 node_exporter，CPU、内存、磁盘和网络预定义查询返回数据，Alertmanager `0.34.0` 携带独立 Bearer Token 的真实回调、恢复、认领和 active Silence 均通过。
 - 镜像内 Django、Channels、Paramiko、MySQL 和 LDAP 依赖导入通过。
 - Shell 语法和 Git 差异检查通过。
 - Gitleaks 全仓库扫描未发现泄露。
@@ -64,5 +77,5 @@ Guacamole Web 的 Java 依赖扫描需要额外下载约 908 MiB 的 Trivy Java 
 复扫示例：
 
 ```bash
-trivy image --scanners vuln --severity CRITICAL,HIGH spug-ops:0.1.0-alpha.9
+trivy image --scanners vuln --severity CRITICAL,HIGH spug-ops:0.1.0-alpha.10
 ```

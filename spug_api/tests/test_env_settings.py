@@ -256,3 +256,36 @@ class EnvSettingsTest(TestCase):
                 default_allowed_hosts=['127.0.0.1'],
                 environ={'SPUG_REMOTE_TICKET_TTL': '600'},
             )
+
+    def test_production_observability_requires_two_independent_tokens(self):
+        common = {
+            'SPUG_ENV': 'production',
+            'SPUG_SECRET_KEY': 'a-production-secret-with-32-characters',
+            'SPUG_CREDENTIAL_MASTER_KEY': MASTER_KEY,
+            'SPUG_AUDIT_SIGNING_KEY': AUDIT_KEY,
+            'SPUG_ALLOWED_HOSTS': 'ops.example.com',
+            'SPUG_OBSERVABILITY_ENABLED': 'true',
+        }
+        with self.assertRaisesRegex(ValueError, 'SPUG_PROMETHEUS_DISCOVERY_TOKEN'):
+            load_security_settings(
+                default_secret='development-secret',
+                default_debug=True,
+                default_allowed_hosts=['127.0.0.1'],
+                environ=common,
+            )
+
+        result = load_security_settings(
+            default_secret='development-secret',
+            default_debug=True,
+            default_allowed_hosts=['127.0.0.1'],
+            environ=dict(
+                common,
+                SPUG_PROMETHEUS_DISCOVERY_TOKEN='p' * 64,
+                SPUG_ALERTMANAGER_WEBHOOK_TOKEN='w' * 64,
+                SPUG_PROMETHEUS_URL='http://prometheus:9090',
+                SPUG_ALERTMANAGER_URL='http://alertmanager:9093',
+            ),
+        )
+        self.assertTrue(result['observability_enabled'])
+        self.assertEqual(result['prometheus_discovery_token'], 'p' * 64)
+        self.assertEqual(result['alertmanager_webhook_token'], 'w' * 64)

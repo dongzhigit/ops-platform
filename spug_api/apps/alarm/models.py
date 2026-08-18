@@ -24,6 +24,9 @@ class Alarm(models.Model, ModelMixin):
     name = models.CharField(max_length=50)
     type = models.CharField(max_length=50)
     target = models.CharField(max_length=100)
+    host = models.ForeignKey(
+        'host.Host', models.SET_NULL, related_name='+', null=True, blank=True
+    )
     notify_mode = models.CharField(max_length=255)
     notify_grp = models.CharField(max_length=255)
     status = models.CharField(max_length=2, choices=STATUS)

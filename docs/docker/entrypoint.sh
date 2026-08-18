@@ -10,6 +10,15 @@ require_env() {
     fi
 }
 
+require_secret_file() {
+    local name="$1"
+    local path="${!name:-}"
+    if [ -z "$path" ] || [ ! -s "$path" ]; then
+        echo "error: ${name} must reference a non-empty readable secret file" >&2
+        exit 1
+    fi
+}
+
 require_env SPUG_SECRET_KEY
 require_env SPUG_CREDENTIAL_MASTER_KEY
 require_env SPUG_ALLOWED_HOSTS
@@ -27,6 +36,13 @@ if [[ "$remote_gateway_enabled" =~ ^(1|true|yes|on)$ ]]; then
         echo "error: SPUG_GUACAMOLE_JSON_SECRET_KEY must contain exactly 32 hexadecimal characters" >&2
         exit 1
     fi
+fi
+
+observability_enabled="${SPUG_OBSERVABILITY_ENABLED:-false}"
+observability_enabled="${observability_enabled,,}"
+if [[ "$observability_enabled" =~ ^(1|true|yes|on)$ ]]; then
+    require_secret_file SPUG_PROMETHEUS_DISCOVERY_TOKEN_FILE
+    require_secret_file SPUG_ALERTMANAGER_WEBHOOK_TOKEN_FILE
 fi
 
 if [ "${#SPUG_SECRET_KEY}" -lt 32 ]; then

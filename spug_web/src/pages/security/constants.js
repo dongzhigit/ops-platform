@@ -11,6 +11,7 @@ export const ACTION_LABELS = {
   'deploy.run': '发布部署',
   'config.write': '修改配置',
   'host.view': '查看主机',
+  'metrics.view': '查看主机指标与告警',
 }
 
 export const RISK_LABELS = {

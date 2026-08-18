@@ -75,6 +75,42 @@ def development_guacamole_key(secret_key):
     return hashlib.sha256(material).digest()[:16].hex()
 
 
+def development_service_token(secret_key, scope):
+    material = ('spug-development-%s-token:%s' % (scope, secret_key)).encode('utf-8')
+    return hashlib.sha256(material).hexdigest()
+
+
+def load_secret_value(environ, name):
+    direct = str(environ.get(name, '')).strip()
+    file_path = str(environ.get(name + '_FILE', '')).strip()
+    if direct and file_path:
+        raise ValueError('%s and %s_FILE cannot both be configured' % (name, name))
+    if not file_path:
+        return direct
+    try:
+        with open(file_path, 'r') as stream:
+            return stream.read().strip()
+    except OSError as exc:
+        raise ValueError('cannot read %s_FILE: %s' % (name, exc))
+
+
+def validate_service_token(value, *, name):
+    value = str(value).strip()
+    if len(value) < 32:
+        raise ValueError('%s must contain at least 32 characters' % name)
+    return value
+
+
+def validate_service_url(value, *, name):
+    value = str(value).strip().rstrip('/')
+    parsed = urlsplit(value)
+    if parsed.scheme not in ('http', 'https') or not parsed.netloc:
+        raise ValueError('%s must be an absolute HTTP(S) URL' % name)
+    if parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise ValueError('%s cannot contain credentials, a query string or fragment' % name)
+    return value
+
+
 def validate_guacamole_key(value, *, name='SPUG_GUACAMOLE_JSON_SECRET_KEY'):
     value = str(value).strip().lower()
     if len(value) != 32:
@@ -133,10 +169,19 @@ def load_security_settings(*, default_secret, default_debug, default_allowed_hos
     provided_master_key = str(environ.get('SPUG_CREDENTIAL_MASTER_KEY', '')).strip()
     provided_audit_key = str(environ.get('SPUG_AUDIT_SIGNING_KEY', '')).strip()
     provided_guacamole_key = str(environ.get('SPUG_GUACAMOLE_JSON_SECRET_KEY', '')).strip()
+    provided_discovery_token = load_secret_value(
+        environ, 'SPUG_PROMETHEUS_DISCOVERY_TOKEN'
+    )
+    provided_webhook_token = load_secret_value(
+        environ, 'SPUG_ALERTMANAGER_WEBHOOK_TOKEN'
+    )
     debug = env_bool('SPUG_DEBUG', default=False if is_production else default_debug, environ=environ)
     allowed_hosts = env_list('SPUG_ALLOWED_HOSTS', default_allowed_hosts, environ=environ)
     remote_gateway_enabled = env_bool(
         'SPUG_REMOTE_GATEWAY_ENABLED', default=not is_production, environ=environ
+    )
+    observability_enabled = env_bool(
+        'SPUG_OBSERVABILITY_ENABLED', default=not is_production, environ=environ
     )
 
     if is_production:
@@ -163,6 +208,27 @@ def load_security_settings(*, default_secret, default_debug, default_allowed_hos
         if provided_guacamole_key and provided_guacamole_key in (
                 provided_secret, provided_master_key, provided_audit_key):
             raise ValueError('SPUG_GUACAMOLE_JSON_SECRET_KEY must be an independent production key')
+        if observability_enabled:
+            if not provided_discovery_token:
+                raise ValueError(
+                    'SPUG_PROMETHEUS_DISCOVERY_TOKEN or its _FILE variant is required '
+                    'when production observability is enabled'
+                )
+            if not provided_webhook_token:
+                raise ValueError(
+                    'SPUG_ALERTMANAGER_WEBHOOK_TOKEN or its _FILE variant is required '
+                    'when production observability is enabled'
+                )
+            independent_values = {
+                provided_secret,
+                provided_master_key,
+                provided_audit_key,
+                provided_guacamole_key,
+                provided_discovery_token,
+                provided_webhook_token,
+            }
+            if len(independent_values) != 6:
+                raise ValueError('all production observability and application keys must be independent')
 
     fallback_master_key = (
         validate_master_key(provided_master_key)
@@ -187,6 +253,7 @@ def load_security_settings(*, default_secret, default_debug, default_allowed_hos
         'secure_cookies': env_bool('SPUG_SECURE_COOKIES', default=is_production, environ=environ),
         'ssl_redirect': env_bool('SPUG_SSL_REDIRECT', default=False, environ=environ),
         'remote_gateway_enabled': remote_gateway_enabled,
+        'observability_enabled': observability_enabled,
         'guacamole_json_secret_key': (
             validate_guacamole_key(provided_guacamole_key)
             if provided_guacamole_key
@@ -200,5 +267,31 @@ def load_security_settings(*, default_secret, default_debug, default_allowed_hos
         ),
         'guacamole_auth_ttl': env_int(
             'SPUG_GUACAMOLE_AUTH_TTL', 60, 15, 300, environ=environ
+        ),
+        'prometheus_discovery_token': validate_service_token(
+            provided_discovery_token or development_service_token(secret_key, 'prometheus'),
+            name='SPUG_PROMETHEUS_DISCOVERY_TOKEN',
+        ),
+        'alertmanager_webhook_token': validate_service_token(
+            provided_webhook_token or development_service_token(secret_key, 'alertmanager'),
+            name='SPUG_ALERTMANAGER_WEBHOOK_TOKEN',
+        ),
+        'prometheus_url': validate_service_url(
+            environ.get('SPUG_PROMETHEUS_URL', 'http://127.0.0.1:9090'),
+            name='SPUG_PROMETHEUS_URL',
+        ),
+        'alertmanager_url': validate_service_url(
+            environ.get('SPUG_ALERTMANAGER_URL', 'http://127.0.0.1:9093'),
+            name='SPUG_ALERTMANAGER_URL',
+        ),
+        'observability_request_timeout': env_int(
+            'SPUG_OBSERVABILITY_REQUEST_TIMEOUT', 10, 1, 60, environ=environ
+        ),
+        'alertmanager_max_body': env_int(
+            'SPUG_ALERTMANAGER_MAX_BODY', 524288, 1024, 5242880,
+            environ=environ,
+        ),
+        'alert_retention_days': env_int(
+            'SPUG_ALERT_RETENTION_DAYS', 90, 30, 3650, environ=environ
         ),
     }

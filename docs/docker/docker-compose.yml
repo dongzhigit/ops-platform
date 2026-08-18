@@ -68,6 +68,74 @@ services:
       - frontend
       - remote_gateway
 
+  alertmanager:
+    image: prom/alertmanager:v0.34.0
+    container_name: spug-alertmanager
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+    volumes:
+      - ./observability/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - ${SPUG_OBSERVABILITY_SECRETS_ROOT:-./secrets}/alertmanager_webhook_token:/run/secrets/alertmanager_webhook_token:ro
+      - alertmanager_data:/alertmanager
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:9093/-/ready || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    networks:
+      - observability
+
+  prometheus:
+    image: prom/prometheus:v3.14.0
+    container_name: spug-prometheus
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=${SPUG_PROMETHEUS_RETENTION:-30d}
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./observability/alert-rules.yml:/etc/prometheus/rules/alert-rules.yml:ro
+      - ${SPUG_OBSERVABILITY_SECRETS_ROOT:-./secrets}/prometheus_discovery_token:/run/secrets/prometheus_discovery_token:ro
+      - prometheus_data:/prometheus
+    depends_on:
+      alertmanager:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:9090/-/ready || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+    networks:
+      - observability
+
+  node-exporter:
+    image: prom/node-exporter:v1.12.1
+    container_name: spug-node-exporter
+    restart: unless-stopped
+    pid: host
+    security_opt:
+      - no-new-privileges:true
+    command:
+      - --path.procfs=/host/proc
+      - --path.sysfs=/host/sys
+      - --path.rootfs=/rootfs
+      - --collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    networks:
+      - observability
+
   spug:
     # The legacy M0 image currently depends on CentOS 7 x86_64 packages.
     platform: ${SPUG_PLATFORM:-linux/amd64}
@@ -91,6 +159,8 @@ services:
       - ${SPUG_DATA_ROOT:-./data}/service/logs:/data/spug/spug_api/logs
       - ${SPUG_DATA_ROOT:-./data}/service/storage:/data/spug/spug_api/storage
       - ${SPUG_DATA_ROOT:-./data}/repos:/data/repos
+      - ${SPUG_OBSERVABILITY_SECRETS_ROOT:-./secrets}/prometheus_discovery_token:/run/secrets/prometheus_discovery_token:ro
+      - ${SPUG_OBSERVABILITY_SECRETS_ROOT:-./secrets}/alertmanager_webhook_token:/run/secrets/alertmanager_webhook_token:ro
     ports:
       # Keep the service private by default. Put a TLS reverse proxy in front
       # or explicitly change SPUG_BIND_HOST for a trusted network.
@@ -107,6 +177,13 @@ services:
       SPUG_GUACAMOLE_PUBLIC_URL: ${SPUG_GUACAMOLE_PUBLIC_URL:-/guacamole}
       SPUG_REMOTE_TICKET_TTL: ${SPUG_REMOTE_TICKET_TTL:-60}
       SPUG_GUACAMOLE_AUTH_TTL: ${SPUG_GUACAMOLE_AUTH_TTL:-60}
+      SPUG_OBSERVABILITY_ENABLED: ${SPUG_OBSERVABILITY_ENABLED:-true}
+      SPUG_PROMETHEUS_DISCOVERY_TOKEN_FILE: /run/secrets/prometheus_discovery_token
+      SPUG_ALERTMANAGER_WEBHOOK_TOKEN_FILE: /run/secrets/alertmanager_webhook_token
+      SPUG_PROMETHEUS_URL: http://prometheus:9090
+      SPUG_ALERTMANAGER_URL: http://alertmanager:9093
+      SPUG_OBSERVABILITY_REQUEST_TIMEOUT: ${SPUG_OBSERVABILITY_REQUEST_TIMEOUT:-10}
+      SPUG_ALERT_RETENTION_DAYS: ${SPUG_ALERT_RETENTION_DAYS:-90}
       SPUG_ALLOWED_HOSTS: ${SPUG_ALLOWED_HOSTS:?SPUG_ALLOWED_HOSTS is required}
       SPUG_CSRF_TRUSTED_ORIGINS: ${SPUG_CSRF_TRUSTED_ORIGINS:-}
       SPUG_SECURE_COOKIES: ${SPUG_SECURE_COOKIES:-true}
@@ -130,6 +207,7 @@ services:
     networks:
       - frontend
       - backend
+      - observability
 
 networks:
   frontend:
@@ -138,3 +216,10 @@ networks:
   # guacd needs outbound access to managed RDP/VNC hosts. Do not publish its
   # port; restrict this bridge's egress with the host firewall in production.
   remote_gateway:
+  observability:
+    # No ports are published, but Prometheus needs egress to approved managed
+    # hosts. Restrict destination ranges with the host firewall.
+
+volumes:
+  prometheus_data:
+  alertmanager_data:

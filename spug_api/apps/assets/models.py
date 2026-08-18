@@ -183,6 +183,7 @@ class AccessGrant(models.Model, ModelMixin):
         'exec.run',
         'schedule.run',
         'monitor.run',
+        'metrics.view',
         'deploy.run',
         '*',
     }
