@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import stat
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
@@ -13,9 +14,11 @@ from django.test import RequestFactory, TransactionTestCase
 from apps.account.models import User
 from apps.assets.models import AssetIdentityBinding, Credential, Identity
 from apps.audit.services import create_approval, decide_approval
-from apps.file.models import FileTransfer, FileTransferBatch
+from apps.file.models import FileEditSession, FileTransfer, FileTransferBatch
 from apps.file.services import cleanup_expired_file_transfers
 from apps.file.views import (
+    EditSessionSaveView,
+    EditSessionView,
     UploadBatchDetailView,
     UploadBatchView,
     UploadChunkView,
@@ -62,7 +65,7 @@ class FileBatchSFTPIntegrationTest(TransactionTestCase):
             is_default=True,
         )
         self.directory = os.environ.get('SPUG_TEST_SFTP_DIRECTORY', '/upload')
-        self.prefix = 'alpha7-%s-' % uuid.uuid4().hex[:10]
+        self.prefix = 'alpha8-%s-' % uuid.uuid4().hex[:10]
 
     @staticmethod
     def make_user(username):
@@ -293,3 +296,79 @@ class FileBatchSFTPIntegrationTest(TransactionTestCase):
         self.assertGreaterEqual(cleanup['removed'], 1)
         cancel_transfer.refresh_from_db()
         self.assertEqual(cancel_transfer.cleanup_status, 'removed')
+
+        edit_path = self.directory + '/' + self.prefix + 'edit.conf'
+        initial_content = 'name=old\n说明=初始\n'.encode('utf-8')
+        saved_content = 'name=new\n说明=安全保存\n'.encode('utf-8')
+        with self.host.get_ssh() as ssh:
+            ssh.write_file_chunk(BytesIO(initial_content), edit_path, 0)
+            original_stat = ssh.sftp_stat(edit_path)
+            ssh.set_file_attributes(
+                edit_path,
+                0o640,
+                original_stat.st_uid,
+                original_stat.st_gid,
+            )
+            original_stat = ssh.sftp_stat(edit_path)
+        request = RequestFactory().post(
+            '/file/edit-sessions/',
+            data=json.dumps({'id': self.host.id, 'file': edit_path}),
+            content_type='application/json',
+        )
+        request.user = self.user
+        opened = self.response_data(EditSessionView.as_view()(request))
+        self.assertEqual(opened['content'].encode('utf-8'), initial_content)
+        edit_session = FileEditSession.objects.get(
+            session_id=opened['session_id']
+        )
+        edit_payload = {
+            'host_ids': [self.host.id],
+            'file': edit_path,
+            'base_etag': edit_session.base_etag,
+            'base_sha256': edit_session.base_sha256,
+            'size': len(saved_content),
+            'sha256': hashlib.sha256(saved_content).hexdigest(),
+            'encoding': 'utf-8',
+            'conflict_strategy': 'reject_on_change',
+        }
+        edit_approval = create_approval(
+            requester=self.user,
+            action='file.write',
+            resource_type='host',
+            resource_ids=[self.host.id],
+            payload=edit_payload,
+            summary='真实 SFTP 在线编辑集成测试',
+        )
+        decide_approval(
+            approval_id=edit_approval.id,
+            approver=self.approver,
+            is_pass=True,
+        )
+        request = RequestFactory().post(
+            '/file/edit-sessions/%s/save/' % edit_session.session_id,
+            data=json.dumps({
+                'content': saved_content.decode('utf-8'),
+                'sha256': edit_payload['sha256'],
+                'base_etag': edit_payload['base_etag'],
+                'base_sha256': edit_payload['base_sha256'],
+                'approval_id': str(edit_approval.id),
+            }),
+            content_type='application/json',
+        )
+        request.user = self.user
+        saved = self.response_data(EditSessionSaveView.as_view()(
+            request, session_id=edit_session.session_id
+        ))
+        self.assertEqual(saved['status'], 'saved')
+        with self.host.get_ssh() as ssh:
+            self.assertEqual(
+                ssh.remote_file_sha256(edit_path),
+                hashlib.sha256(saved_content).hexdigest(),
+            )
+            self.assertEqual(
+                stat.S_IMODE(ssh.sftp_stat(edit_path).st_mode),
+                0o640,
+            )
+            saved_stat = ssh.sftp_stat(edit_path)
+            self.assertEqual(saved_stat.st_uid, original_stat.st_uid)
+            self.assertEqual(saved_stat.st_gid, original_stat.st_gid)

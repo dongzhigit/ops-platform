@@ -10,6 +10,105 @@ def file_transfer_expiry():
     return datetime.now() + timedelta(hours=24)
 
 
+def file_edit_expiry():
+    return datetime.now() + timedelta(minutes=30)
+
+
+class FileEditSession(models.Model, ModelMixin):
+    STATUSES = (
+        ('active', '编辑中'),
+        ('saved', '已保存'),
+        ('cancelled', '已取消'),
+        ('expired', '已过期'),
+    )
+    CLEANUP_STATUSES = (
+        ('pending', '待清理'),
+        ('removed', '已删除'),
+        ('missing', '文件不存在'),
+        ('failed', '清理失败'),
+    )
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    session_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    correlation_id = models.UUIDField(db_index=True, editable=False)
+    editor = models.ForeignKey(
+        'account.User', models.PROTECT, related_name='file_edit_sessions'
+    )
+    host = models.ForeignKey(
+        'host.Host', models.PROTECT, related_name='file_edit_sessions'
+    )
+    approval = models.ForeignKey(
+        'audit.ApprovalRequest', models.PROTECT,
+        related_name='file_edit_sessions', null=True, blank=True
+    )
+    remote_path = models.CharField(max_length=1280)
+    path_hash = models.CharField(max_length=64)
+    filename = models.CharField(max_length=255)
+    temporary_path = models.CharField(max_length=1280)
+    base_size = models.BigIntegerField()
+    base_mtime = models.BigIntegerField()
+    base_etag = models.CharField(max_length=66)
+    base_sha256 = models.CharField(max_length=64)
+    status = models.CharField(
+        max_length=16, choices=STATUSES, default='active', db_index=True
+    )
+    error = models.CharField(max_length=255, null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    expires_at = models.DateTimeField(default=file_edit_expiry, db_index=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    cleanup_status = models.CharField(
+        max_length=16, choices=CLEANUP_STATUSES, default='pending', db_index=True
+    )
+    cleanup_attempts = models.PositiveSmallIntegerField(default=0)
+    cleanup_attempted_at = models.DateTimeField(null=True, blank=True)
+    cleanup_completed_at = models.DateTimeField(null=True, blank=True)
+    cleanup_error = models.CharField(max_length=255, null=True, blank=True)
+
+    def refresh_expiry_status(self, at=None):
+        at = at or datetime.now()
+        if self.status == 'active' and self.expires_at <= at:
+            self.status = 'expired'
+            self.error = '在线编辑锁已过期'
+            self.save(update_fields=('status', 'error', 'updated_at'))
+            return True
+        return False
+
+    def to_view(self):
+        return {
+            'id': str(self.id),
+            'session_id': str(self.session_id),
+            'correlation_id': str(self.correlation_id),
+            'host_id': self.host_id,
+            'remote_path': self.remote_path,
+            'filename': self.filename,
+            'base_size': self.base_size,
+            'base_mtime': self.base_mtime,
+            'base_etag': self.base_etag,
+            'base_sha256': self.base_sha256,
+            'status': self.status,
+            'error': self.error,
+            'created_at': self.created_at,
+            'updated_at': self.updated_at,
+            'expires_at': self.expires_at,
+            'completed_at': self.completed_at,
+            'cleanup_status': self.cleanup_status,
+        }
+
+    def to_dict(self, *args, **kwargs):
+        return self.to_view()
+
+    class Meta:
+        db_table = 'file_edit_sessions'
+        ordering = ('-updated_at',)
+        unique_together = (('host', 'path_hash'),)
+        indexes = (
+            models.Index(
+                fields=('editor', 'status'), name='file_edit_editor_status_idx'
+            ),
+        )
+
+
 class FileTransferBatch(models.Model, ModelMixin):
     STATUSES = (
         ('active', '传输中'),

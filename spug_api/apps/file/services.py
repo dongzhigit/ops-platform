@@ -6,7 +6,7 @@ from django.db.models import Q
 
 from apps.audit.services import record_event
 
-from .models import FileTransfer, FileTransferBatch
+from .models import FileEditSession, FileTransfer, FileTransferBatch
 
 
 logger = logging.getLogger(__name__)
@@ -155,4 +155,77 @@ def cleanup_expired_file_transfers(*, execute=False, limit=100, at=None):
                 )
             except Exception:
                 logger.exception('failed to record file transfer cleanup audit event')
+    return summary
+
+
+def cleanup_expired_file_edit_sessions(*, execute=False, limit=100, at=None):
+    at = at or datetime.now()
+    limit = max(1, min(int(limit), 1000))
+    candidates = FileEditSession.objects.filter(
+        Q(status='active', expires_at__lte=at) |
+        Q(status__in=('expired', 'cancelled')),
+        cleanup_status__in=('pending', 'failed'),
+        cleanup_attempts__lt=MAX_CLEANUP_ATTEMPTS,
+    )
+    candidate_ids = list(
+        candidates.order_by('expires_at').values_list('id', flat=True)[:limit]
+    )
+    summary = {
+        'eligible': len(candidate_ids),
+        'removed': 0,
+        'missing': 0,
+        'failed': 0,
+        'skipped': 0,
+    }
+    if not execute:
+        return summary
+
+    for edit_id in candidate_ids:
+        event = None
+        with transaction.atomic():
+            session = FileEditSession.objects.select_for_update().select_related(
+                'host', 'editor'
+            ).filter(pk=edit_id).first()
+            if not session or session.cleanup_status not in ('pending', 'failed') or (
+                session.cleanup_attempts >= MAX_CLEANUP_ATTEMPTS
+            ):
+                summary['skipped'] += 1
+                continue
+            if session.status == 'active':
+                if session.expires_at > at:
+                    summary['skipped'] += 1
+                    continue
+                session.status = 'expired'
+                session.error = '在线编辑锁已过期'
+            elif session.status not in ('expired', 'cancelled'):
+                summary['skipped'] += 1
+                continue
+            outcome = cleanup_transfer_temporary_file(session, at=at)
+            session.save(update_fields=(
+                'status', 'error', 'cleanup_status', 'cleanup_attempts',
+                'cleanup_attempted_at', 'cleanup_completed_at',
+                'cleanup_error', 'updated_at',
+            ))
+            summary[outcome] += 1
+            event = {
+                'correlation_id': session.correlation_id,
+                'actor': session.editor,
+                'resource_id': session.host_id,
+                'result': 'failed' if outcome == 'failed' else 'succeeded',
+                'details': {
+                    'edit_session_id': str(session.session_id),
+                    'file': session.remote_path,
+                    'cleanup_outcome': outcome,
+                    'cleanup_attempt': session.cleanup_attempts,
+                },
+            }
+        if event:
+            try:
+                record_event(
+                    action='file.cleanup',
+                    resource_type='host',
+                    **event
+                )
+            except Exception:
+                logger.exception('failed to record file edit cleanup audit event')
     return summary

@@ -2,7 +2,7 @@
 # Copyright: (c) <spug.dev@gmail.com>
 # Released under the AGPL-3.0 License.
 from django.views.generic import View
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.db.models import Prefetch
 from django.http import HttpResponse, StreamingHttpResponse
 from django.utils.http import http_date
@@ -15,7 +15,13 @@ from apps.audit.services import (
     record_event,
     verify_consumed_approval,
 )
-from apps.file.models import FileTransfer, FileTransferBatch, file_transfer_expiry
+from apps.file.models import (
+    FileEditSession,
+    FileTransfer,
+    FileTransferBatch,
+    file_edit_expiry,
+    file_transfer_expiry,
+)
 from apps.file.services import (
     MAX_CLEANUP_ATTEMPTS,
     cleanup_transfer_temporary_file,
@@ -31,6 +37,7 @@ from apps.file.utils import (
 from libs import json_response, JsonParser, Argument, auth
 from functools import partial
 from datetime import datetime
+from io import BytesIO
 import hashlib
 import logging
 import posixpath
@@ -45,6 +52,7 @@ MAX_FILE_SIZE = 1024 * 1024 * 1024 * 1024
 MAX_BATCH_FILES = 50
 MAX_BATCH_TOTAL_SIZE = 5 * MAX_FILE_SIZE
 MAX_BATCH_CONCURRENCY = 4
+MAX_EDIT_SIZE = 2 * 1024 * 1024
 SHA256_PATTERN = re.compile(r'^[0-9a-f]{64}$')
 
 
@@ -137,6 +145,40 @@ def _normalize_batch_files(files):
     if total_size > MAX_BATCH_TOTAL_SIZE:
         raise FileTransferError('批量上传总大小超出 5 TiB 限制')
     return sorted(normalized, key=lambda item: item['filename']), total_size
+
+
+def _normalize_edit_path(remote_path):
+    if not isinstance(remote_path, str) or '\x00' in remote_path:
+        raise FileTransferError('文件路径包含非法字符')
+    if not remote_path.startswith('/'):
+        raise FileTransferError('文件路径必须是绝对路径')
+    normalized = posixpath.normpath(remote_path)
+    filename = posixpath.basename(normalized)
+    if normalized == '/' or filename in ('', '.', '..'):
+        raise FileTransferError('只能在线编辑普通文件')
+    if len(filename.encode('utf-8')) > 255 or len(normalized) > 1280:
+        raise FileTransferError('文件路径过长')
+    return normalized, filename
+
+
+def _edit_path_hash(remote_path):
+    return hashlib.sha256(remote_path.encode('utf-8')).hexdigest()
+
+
+def _get_user_edit_session(session_id, user, for_update=False):
+    sessions = FileEditSession.objects
+    if for_update:
+        sessions = sessions.select_for_update()
+    else:
+        sessions = sessions.select_related('host', 'approval')
+    session = sessions.filter(session_id=session_id, editor=user).first()
+    if not session:
+        raise FileTransferError('未找到在线编辑会话')
+    if not has_host_perm(user, session.host_id, action='file.read') or not (
+        has_host_perm(user, session.host_id, action='file.write')
+    ):
+        raise FileTransferError('无权编辑主机文件，请联系管理员')
+    return session
 
 
 class FileView(View):
@@ -433,6 +475,422 @@ class ObjectView(View):
     def _compute_progress(self, rds_cli, token, total, value, *args):
         percent = '%.1f' % (value / total * 100)
         rds_cli.publish(token, percent)
+
+
+class EditSessionView(View):
+    @auth('host.console.upload')
+    def post(self, request):
+        form, error = JsonParser(
+            Argument('id', type=int, help='参数错误'),
+            Argument('file', help='请输入文件路径'),
+        ).parse(request.body)
+        if error:
+            return json_response(error=error)
+        if not has_host_perm(request.user, form.id, action='file.read') or not (
+            has_host_perm(request.user, form.id, action='file.write')
+        ):
+            return json_response(error='无权编辑主机文件，请联系管理员')
+        host = Host.objects.filter(pk=form.id).first()
+        if not host:
+            return json_response(error='未找到指定主机')
+        try:
+            remote_path, filename = _normalize_edit_path(form.file)
+            path_hash = _edit_path_hash(remote_path)
+            with transaction.atomic():
+                session = FileEditSession.objects.select_for_update().filter(
+                    host=host, path_hash=path_hash
+                ).first()
+                if not session:
+                    try:
+                        with transaction.atomic():
+                            FileEditSession.objects.create(
+                                correlation_id=uuid.uuid4(),
+                                editor=request.user,
+                                host=host,
+                                remote_path=remote_path,
+                                path_hash=path_hash,
+                                filename=filename,
+                                temporary_path=posixpath.join(
+                                    posixpath.dirname(remote_path),
+                                    '.spug-edit-placeholder.part',
+                                ),
+                                base_size=0,
+                                base_mtime=0,
+                                base_etag='""',
+                                base_sha256='0' * 64,
+                                status='expired',
+                                cleanup_status='missing',
+                                cleanup_completed_at=datetime.now(),
+                            )
+                    except IntegrityError:
+                        pass
+                    session = FileEditSession.objects.select_for_update().get(
+                        host=host, path_hash=path_hash
+                    )
+                session.refresh_expiry_status()
+                if session.status == 'active' and session.editor_id != request.user.id:
+                    raise FileTransferError(
+                        '文件正由 %s 编辑，锁将在 %s 过期' % (
+                            session.editor.nickname or session.editor.username,
+                            session.expires_at,
+                        )
+                    )
+                reuse_active_lock = (
+                    session.status == 'active' and
+                    session.editor_id == request.user.id
+                )
+                if not reuse_active_lock and session.cleanup_status in (
+                    'pending', 'failed'
+                ):
+                    raise FileTransferError(
+                        '上一个编辑会话的临时文件正在清理，请稍后重试'
+                    )
+                try:
+                    with host.get_ssh() as ssh:
+                        raw_content, file_stat = ssh.read_file(
+                            remote_path, MAX_EDIT_SIZE
+                        )
+                except ValueError:
+                    raise FileTransferError(
+                        '在线编辑仅支持不超过 2 MiB 的普通文本文件'
+                    )
+                try:
+                    content = raw_content.decode('utf-8')
+                except UnicodeDecodeError:
+                    raise FileTransferError('在线编辑仅支持 UTF-8 文本文件')
+                if '\x00' in content:
+                    raise FileTransferError('在线编辑不支持包含 NUL 的二进制文件')
+
+                edit_session_id = (
+                    session.session_id if reuse_active_lock else uuid.uuid4()
+                )
+                session.session_id = edit_session_id
+                session.correlation_id = uuid.uuid4()
+                session.editor = request.user
+                session.approval = None
+                session.remote_path = remote_path
+                session.filename = filename
+                if not reuse_active_lock:
+                    session.temporary_path = posixpath.join(
+                        posixpath.dirname(remote_path),
+                        '.spug-edit-%s.part' % edit_session_id.hex,
+                    )
+                session.base_size = len(raw_content)
+                session.base_mtime = int(file_stat.st_mtime or 0)
+                session.base_etag = remote_file_etag(
+                    host.id, remote_path, file_stat
+                )
+                session.base_sha256 = hashlib.sha256(raw_content).hexdigest()
+                session.status = 'active'
+                session.error = None
+                session.expires_at = file_edit_expiry()
+                session.completed_at = None
+                session.cleanup_status = 'pending'
+                session.cleanup_attempts = 0
+                session.cleanup_attempted_at = None
+                session.cleanup_completed_at = None
+                session.cleanup_error = None
+                session.save(update_fields=(
+                    'session_id', 'correlation_id', 'editor', 'approval',
+                    'remote_path', 'filename', 'temporary_path', 'base_size',
+                    'base_mtime', 'base_etag', 'base_sha256', 'status', 'error',
+                    'expires_at', 'completed_at', 'cleanup_status',
+                    'cleanup_attempts', 'cleanup_attempted_at',
+                    'cleanup_completed_at', 'cleanup_error', 'updated_at',
+                ))
+            record_event(
+                correlation_id=session.correlation_id,
+                actor=request.user,
+                action='file.edit',
+                resource_type='host',
+                resource_id=host.id,
+                result='started',
+                details={
+                    'edit_session_id': str(session.session_id),
+                    'file': remote_path,
+                    'base_size': session.base_size,
+                    'base_sha256': session.base_sha256,
+                    'expires_at': session.expires_at,
+                },
+                request=request,
+            )
+            data = session.to_view()
+            data['content'] = content
+            return json_response(data)
+        except FileTransferError as exc:
+            return json_response(error=str(exc))
+        except Exception:
+            logger.exception('failed to open SFTP file edit session')
+            return json_response(error='读取远端文件失败，请检查文件和主机连接')
+
+
+class EditSessionDetailView(View):
+    @auth('host.console.upload')
+    def get(self, request, session_id):
+        try:
+            with transaction.atomic():
+                session = _get_user_edit_session(
+                    session_id, request.user, for_update=True
+                )
+                session.refresh_expiry_status()
+            return json_response(session.to_view())
+        except FileTransferError as exc:
+            return json_response(error=str(exc))
+
+    @auth('host.console.upload')
+    def patch(self, request, session_id):
+        form, error = JsonParser(
+            Argument(
+                'action', filter=lambda value: value == 'heartbeat',
+                help='不支持的在线编辑操作',
+            ),
+        ).parse(request.body)
+        if error:
+            return json_response(error=error)
+        try:
+            with transaction.atomic():
+                session = _get_user_edit_session(
+                    session_id, request.user, for_update=True
+                )
+                if session.refresh_expiry_status() or session.status != 'active':
+                    raise FileTransferError('在线编辑锁已失效，请重新打开文件')
+                session.expires_at = file_edit_expiry()
+                session.error = None
+                session.save(update_fields=(
+                    'expires_at', 'error', 'updated_at'
+                ))
+            return json_response(session.to_view())
+        except FileTransferError as exc:
+            return json_response(error=str(exc))
+
+    @auth('host.console.upload')
+    def delete(self, request, session_id):
+        try:
+            with transaction.atomic():
+                session = _get_user_edit_session(
+                    session_id, request.user, for_update=True
+                )
+                session.refresh_expiry_status()
+                if session.status in ('saved', 'cancelled'):
+                    return json_response(session.to_view())
+                outcome = cleanup_transfer_temporary_file(session)
+                attempted = outcome is not None
+                outcome = outcome or session.cleanup_status
+                if session.status == 'active':
+                    session.status = 'cancelled'
+                    session.error = None
+                session.completed_at = datetime.now()
+                session.save(update_fields=(
+                    'status', 'error', 'completed_at', 'cleanup_status',
+                    'cleanup_attempts', 'cleanup_attempted_at',
+                    'cleanup_completed_at', 'cleanup_error', 'updated_at',
+                ))
+            record_event(
+                correlation_id=session.correlation_id,
+                actor=request.user,
+                action='file.edit',
+                resource_type='host',
+                resource_id=session.host_id,
+                result='cancelled',
+                details={
+                    'edit_session_id': str(session.session_id),
+                    'file': session.remote_path,
+                    'cleanup_outcome': outcome,
+                },
+                request=request,
+            )
+            if attempted:
+                record_event(
+                    correlation_id=session.correlation_id,
+                    actor=request.user,
+                    action='file.cleanup',
+                    resource_type='host',
+                    resource_id=session.host_id,
+                    result='failed' if outcome == 'failed' else 'succeeded',
+                    details={
+                        'edit_session_id': str(session.session_id),
+                        'file': session.remote_path,
+                        'cleanup_outcome': outcome,
+                        'trigger': 'edit_cancelled',
+                    },
+                    request=request,
+                )
+            return json_response(session.to_view())
+        except FileTransferError as exc:
+            return json_response(error=str(exc))
+
+
+class EditSessionSaveView(View):
+    @auth('host.console.upload')
+    def post(self, request, session_id):
+        form, error = JsonParser(
+            Argument('content', default='', required=False),
+            Argument(
+                'sha256', handler=lambda value: value.lower(),
+                filter=lambda value: bool(SHA256_PATTERN.match(value.lower())),
+                help='文件 SHA-256 不合法',
+            ),
+            Argument('base_etag', help='缺少文件基础版本'),
+            Argument(
+                'base_sha256', handler=lambda value: value.lower(),
+                filter=lambda value: bool(SHA256_PATTERN.match(value.lower())),
+                help='基础文件 SHA-256 不合法',
+            ),
+            Argument('approval_id', type=uuid.UUID, help='请指定有效审批单'),
+        ).parse(request.body)
+        if error:
+            return json_response(error=error)
+        content = form.content.encode('utf-8')
+        if len(content) > MAX_EDIT_SIZE:
+            return json_response(error='在线编辑内容不能超过 2 MiB')
+        if hashlib.sha256(content).hexdigest() != form.sha256:
+            return json_response(error='文件内容与 SHA-256 不匹配')
+
+        operation_error = None
+        cleanup_outcome = None
+        gate = None
+        try:
+            with transaction.atomic():
+                session = _get_user_edit_session(
+                    session_id, request.user, for_update=True
+                )
+                if session.refresh_expiry_status() or session.status != 'active':
+                    raise FileTransferError('在线编辑锁已失效，请重新打开文件')
+                if (
+                    form.base_etag != session.base_etag or
+                    form.base_sha256 != session.base_sha256
+                ):
+                    raise FileTransferError('编辑基础版本已变化，请重新打开文件')
+                payload = {
+                    'host_ids': [session.host_id],
+                    'file': session.remote_path,
+                    'base_etag': session.base_etag,
+                    'base_sha256': session.base_sha256,
+                    'size': len(content),
+                    'sha256': form.sha256,
+                    'encoding': 'utf-8',
+                    'conflict_strategy': 'reject_on_change',
+                }
+                temp_attempted = False
+                try:
+                    with session.host.get_ssh() as ssh:
+                        current_stat = ssh.sftp_stat(session.remote_path)
+                        current_etag = remote_file_etag(
+                            session.host_id, session.remote_path, current_stat
+                        )
+                        current_sha256 = (
+                            ssh.remote_file_sha256(session.remote_path)
+                            if current_etag == session.base_etag else None
+                        )
+                        if (
+                            current_etag != session.base_etag or
+                            current_sha256 != session.base_sha256
+                        ):
+                            operation_error = '远端文件已被修改，请重新打开后合并变更'
+                        else:
+                            gate = authorize_operation(
+                                requester=request.user,
+                                action='file.write',
+                                resource_type='host',
+                                resource_ids=[session.host_id],
+                                payload=payload,
+                                approval_id=form.approval_id,
+                                execution_ref=session.session_id,
+                                request=request,
+                            )
+                            session.approval_id = gate['approval_id']
+                            temp_attempted = True
+                            written = ssh.write_file_chunk(
+                                BytesIO(content), session.temporary_path, 0
+                            )
+                            if written != len(content) or (
+                                ssh.remote_file_sha256(session.temporary_path) != form.sha256
+                            ):
+                                operation_error = '远端临时文件校验失败'
+                            else:
+                                if current_stat.st_mode:
+                                    ssh.set_file_attributes(
+                                        session.temporary_path,
+                                        current_stat.st_mode,
+                                        getattr(current_stat, 'st_uid', None),
+                                        getattr(current_stat, 'st_gid', None),
+                                    )
+                                latest_stat = ssh.sftp_stat(session.remote_path)
+                                latest_etag = remote_file_etag(
+                                    session.host_id,
+                                    session.remote_path,
+                                    latest_stat,
+                                )
+                                latest_sha256 = (
+                                    ssh.remote_file_sha256(session.remote_path)
+                                    if latest_etag == session.base_etag else None
+                                )
+                                if (
+                                    latest_etag != session.base_etag or
+                                    latest_sha256 != session.base_sha256
+                                ):
+                                    operation_error = '保存期间远端文件发生变化，未覆盖原文件'
+                                else:
+                                    ssh.replace_file(
+                                        session.temporary_path,
+                                        session.remote_path,
+                                        overwrite=True,
+                                    )
+                except ApprovalError:
+                    raise
+                except Exception:
+                    logger.exception('failed to save SFTP edited file')
+                    operation_error = '保存远端文件失败，请检查连接和目录权限'
+
+                if operation_error:
+                    if temp_attempted:
+                        cleanup_outcome = cleanup_transfer_temporary_file(session)
+                    session.error = operation_error
+                    session.save(update_fields=(
+                        'approval', 'error', 'cleanup_status',
+                        'cleanup_attempts', 'cleanup_attempted_at',
+                        'cleanup_completed_at', 'cleanup_error', 'updated_at',
+                    ))
+                else:
+                    session.status = 'saved'
+                    session.error = None
+                    session.completed_at = datetime.now()
+                    session.cleanup_status = 'removed'
+                    session.cleanup_completed_at = session.completed_at
+                    session.cleanup_error = None
+                    session.save(update_fields=(
+                        'approval', 'status', 'error', 'completed_at',
+                        'cleanup_status', 'cleanup_completed_at',
+                        'cleanup_error', 'updated_at',
+                    ))
+            correlation_id = (
+                gate['correlation_id'] if gate else session.correlation_id
+            )
+            record_event(
+                correlation_id=correlation_id,
+                actor=request.user,
+                action='file.write',
+                resource_type='host',
+                resource_id=session.host_id,
+                result='failed' if operation_error else 'succeeded',
+                details={
+                    'edit_session_id': str(session.session_id),
+                    'file': session.remote_path,
+                    'base_sha256': session.base_sha256,
+                    'sha256': form.sha256,
+                    'size': len(content),
+                    'cleanup_outcome': cleanup_outcome,
+                    'reason': operation_error,
+                },
+                request=request,
+            )
+            if operation_error:
+                return json_response(error=operation_error)
+            return json_response(session.to_view())
+        except ApprovalError as exc:
+            return json_response(error=exc.message)
+        except FileTransferError as exc:
+            return json_response(error=str(exc))
 
 
 class UploadSessionView(View):

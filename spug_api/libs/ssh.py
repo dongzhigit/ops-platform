@@ -10,6 +10,7 @@ from uuid import uuid4
 import errno
 import hashlib
 import posixpath
+import stat
 import time
 import re
 
@@ -201,6 +202,32 @@ class SSH:
                 digest.update(block)
                 block = remote_file.read(block_size)
         return digest.hexdigest()
+
+    def read_file(self, remote_path, max_size):
+        sftp = self._get_sftp()
+        before = sftp.lstat(remote_path)
+        if before.st_size > max_size:
+            raise ValueError('remote file exceeds edit size limit')
+        if before.st_mode and not stat.S_ISREG(before.st_mode):
+            raise ValueError('remote path is not a regular file')
+        with sftp.open(remote_path, 'rb') as remote_file:
+            content = remote_file.read(max_size + 1)
+        if len(content) > max_size:
+            raise ValueError('remote file exceeds edit size limit')
+        after = sftp.lstat(remote_path)
+        if (
+            (after.st_mode and not stat.S_ISREG(after.st_mode)) or
+            before.st_size != after.st_size or
+            before.st_mtime != after.st_mtime
+        ):
+            raise RuntimeError('remote file changed while it was being read')
+        return content, after
+
+    def set_file_attributes(self, remote_path, mode, uid=None, gid=None):
+        sftp = self._get_sftp()
+        if uid is not None and gid is not None:
+            sftp.chown(remote_path, uid, gid)
+        sftp.chmod(remote_path, stat.S_IMODE(mode))
 
     def remote_file_size(self, remote_path):
         try:

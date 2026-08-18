@@ -1,6 +1,7 @@
 import errno
 import hashlib
 import json
+import stat
 import uuid
 from datetime import datetime, timedelta
 from io import BytesIO, StringIO
@@ -15,14 +16,18 @@ from django.urls import resolve
 from apps.account.models import User
 from apps.audit.models import ApprovalRequest, AuditEvent
 from apps.audit.services import create_approval, decide_approval
-from apps.file.models import FileTransfer, FileTransferBatch
+from apps.file.models import FileEditSession, FileTransfer, FileTransferBatch
 from apps.file.services import (
     MAX_CLEANUP_ATTEMPTS,
+    cleanup_expired_file_edit_sessions,
     cleanup_expired_file_transfers,
 )
 from apps.file.utils import remote_file_etag
 from apps.file.views import (
     ObjectView,
+    EditSessionDetailView,
+    EditSessionSaveView,
+    EditSessionView,
     UploadBatchDetailView,
     UploadBatchView,
     UploadChunkView,
@@ -107,6 +112,79 @@ class CompleteSSHStub:
 
     def replace_file(self, source, target, overwrite=True):
         self.replaced.append((source, target, overwrite))
+
+
+class EditSSHStub:
+    def __init__(self, files, mtimes=None, cleanup_error=None):
+        self.files = files
+        self.mtimes = mtimes or {path: 1700000000 for path in files}
+        self.modes = {path: stat.S_IFREG | 0o600 for path in files}
+        self.owners = {path: (1000, 1000) for path in files}
+        self.cleanup_error = cleanup_error
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        return False
+
+    def _stat(self, path):
+        if path not in self.files:
+            raise IOError(errno.ENOENT, 'No such file')
+        return SimpleNamespace(
+            st_size=len(self.files[path]),
+            st_mtime=self.mtimes.get(path, 1700000000),
+            st_mode=self.modes.get(path, stat.S_IFREG | 0o600),
+            st_uid=self.owners.get(path, (1000, 1000))[0],
+            st_gid=self.owners.get(path, (1000, 1000))[1],
+        )
+
+    def read_file(self, path, max_size):
+        content = self.files[path]
+        if len(content) > max_size:
+            raise ValueError('too large')
+        return content, self._stat(path)
+
+    def sftp_stat(self, path):
+        return self._stat(path)
+
+    def remote_file_sha256(self, path):
+        return hashlib.sha256(self.files[path]).hexdigest()
+
+    def write_file_chunk(self, file_obj, path, offset):
+        self.files[path] = file_obj.read()
+        self.mtimes[path] = self.mtimes.get(path, 1700000000) + 1
+        self.modes[path] = stat.S_IFREG | 0o644
+        self.owners[path] = (2000, 2000)
+        return len(self.files[path])
+
+    def set_file_attributes(self, path, mode, uid=None, gid=None):
+        self.modes[path] = stat.S_IFREG | stat.S_IMODE(mode)
+        if uid is not None and gid is not None:
+            self.owners[path] = (uid, gid)
+
+    def replace_file(self, source, target, overwrite=True):
+        self.files[target] = self.files.pop(source)
+        self.mtimes[target] = self.mtimes.pop(
+            source, self.mtimes.get(target, 1700000000)
+        )
+        self.modes[target] = self.modes.pop(
+            source, self.modes.get(target, stat.S_IFREG | 0o600)
+        )
+        self.owners[target] = self.owners.pop(
+            source, self.owners.get(target, (1000, 1000))
+        )
+
+    def remove_file_if_exists(self, path):
+        if self.cleanup_error:
+            raise self.cleanup_error
+        if path not in self.files:
+            return False
+        del self.files[path]
+        self.mtimes.pop(path, None)
+        self.modes.pop(path, None)
+        self.owners.pop(path, None)
+        return True
 
 
 class FileFeatureTest(TestCase):
@@ -266,6 +344,64 @@ class FileFeatureTest(TestCase):
         )
         request.user = user or self.user
         response = UploadBatchDetailView.as_view()(request, batch_id=batch.id)
+        return json.loads(response.content.decode('utf-8'))
+
+    def open_edit(self, ssh, *, user=None, remote_path='/tmp/app.conf'):
+        request = self.factory.post(
+            '/file/edit-sessions/',
+            data=json.dumps({'id': self.host.id, 'file': remote_path}),
+            content_type='application/json',
+        )
+        request.user = user or self.user
+        with patch('apps.host.models.Host.get_ssh', return_value=ssh):
+            response = EditSessionView.as_view()(request)
+        return json.loads(response.content.decode('utf-8'))
+
+    def approve_edit(self, session, content):
+        raw_content = content.encode('utf-8')
+        payload = {
+            'host_ids': [self.host.id],
+            'file': session.remote_path,
+            'base_etag': session.base_etag,
+            'base_sha256': session.base_sha256,
+            'size': len(raw_content),
+            'sha256': hashlib.sha256(raw_content).hexdigest(),
+            'encoding': 'utf-8',
+            'conflict_strategy': 'reject_on_change',
+        }
+        approval = create_approval(
+            requester=self.user,
+            action='file.write',
+            resource_type='host',
+            resource_ids=[self.host.id],
+            payload=payload,
+            summary='在线编辑测试文件',
+        )
+        decide_approval(
+            approval_id=approval.id,
+            approver=self.approver,
+            is_pass=True,
+        )
+        return approval
+
+    def save_edit(self, ssh, session, content, approval):
+        digest = hashlib.sha256(content.encode('utf-8')).hexdigest()
+        request = self.factory.post(
+            '/file/edit-sessions/%s/save/' % session.session_id,
+            data=json.dumps({
+                'content': content,
+                'sha256': digest,
+                'base_etag': session.base_etag,
+                'base_sha256': session.base_sha256,
+                'approval_id': str(approval.id),
+            }),
+            content_type='application/json',
+        )
+        request.user = self.user
+        with patch('apps.host.models.Host.get_ssh', return_value=ssh):
+            response = EditSessionSaveView.as_view()(
+                request, session_id=session.session_id
+            )
         return json.loads(response.content.decode('utf-8'))
 
     def test_full_and_single_range_downloads(self):
@@ -469,6 +605,25 @@ class FileFeatureTest(TestCase):
         self.assertEqual(kwargs['id'], 'builtin:file-transfer-cleanup')
         self.assertEqual(kwargs['max_instances'], 1)
         self.assertTrue(kwargs['coalesce'])
+
+    def test_scheduler_cleanup_handles_transfers_and_edit_locks(self):
+        empty = {
+            'eligible': 0, 'removed': 0, 'missing': 0,
+            'failed': 0, 'skipped': 0,
+        }
+        with patch(
+            'apps.schedule.scheduler.cleanup_expired_file_transfers',
+            return_value=empty,
+        ) as transfer_cleanup, patch(
+            'apps.schedule.scheduler.cleanup_expired_file_edit_sessions',
+            return_value=empty,
+        ) as edit_cleanup, patch(
+            'apps.schedule.scheduler.connections.close_all'
+        ) as close_all:
+            Scheduler._cleanup_file_transfers()
+        transfer_cleanup.assert_called_once_with(execute=True, limit=100)
+        edit_cleanup.assert_called_once_with(execute=True, limit=100)
+        close_all.assert_called_once_with()
 
     def test_ssh_remove_file_if_exists_only_swallows_missing_file(self):
         class SFTPStub:
@@ -834,6 +989,183 @@ class FileFeatureTest(TestCase):
             '未找到批量上传任务',
             json.loads(detail.content.decode('utf-8'))['error'],
         )
+
+    def test_edit_session_reads_utf8_and_blocks_other_editor(self):
+        files = {'/tmp/app.conf': 'name=旧值\n'.encode('utf-8')}
+        ssh = EditSSHStub(files)
+        opened = self.open_edit(ssh)
+        self.assertFalse(opened['error'])
+        self.assertEqual(opened['data']['content'], 'name=旧值\n')
+        session = FileEditSession.objects.get(
+            session_id=opened['data']['session_id']
+        )
+        self.assertEqual(
+            session.base_sha256,
+            hashlib.sha256(files['/tmp/app.conf']).hexdigest(),
+        )
+        blocked = self.open_edit(ssh, user=self.approver)
+        self.assertIn('正由', blocked['error'])
+
+        previous_expiry = session.expires_at
+        request = self.factory.patch(
+            '/file/edit-sessions/%s/' % session.session_id,
+            data=json.dumps({'action': 'heartbeat'}),
+            content_type='application/json',
+        )
+        request.user = self.user
+        response = EditSessionDetailView.as_view()(
+            request, session_id=session.session_id
+        )
+        self.assertFalse(json.loads(response.content.decode('utf-8'))['error'])
+        session.refresh_from_db()
+        self.assertGreaterEqual(session.expires_at, previous_expiry)
+        self.assertTrue(AuditEvent.objects.filter(
+            correlation_id=session.correlation_id,
+            action='file.edit',
+            result='started',
+        ).exists())
+
+    def test_edit_save_consumes_exact_approval_and_replaces_remote_file(self):
+        files = {'/tmp/app.conf': b'name=old\n'}
+        ssh = EditSSHStub(files)
+        ssh.modes['/tmp/app.conf'] = stat.S_IFREG | 0o640
+        ssh.owners['/tmp/app.conf'] = (123, 456)
+        opened = self.open_edit(ssh)
+        session = FileEditSession.objects.get(
+            session_id=opened['data']['session_id']
+        )
+        content = 'name=new\n说明=安全保存\n'
+        approval = self.approve_edit(session, content)
+        saved = self.save_edit(ssh, session, content, approval)
+        self.assertFalse(saved['error'])
+        self.assertEqual(files['/tmp/app.conf'], content.encode('utf-8'))
+        self.assertEqual(stat.S_IMODE(ssh.modes['/tmp/app.conf']), 0o640)
+        self.assertEqual(ssh.owners['/tmp/app.conf'], (123, 456))
+        self.assertNotIn(session.temporary_path, files)
+        session.refresh_from_db()
+        approval.refresh_from_db()
+        self.assertEqual(session.status, 'saved')
+        self.assertEqual(session.cleanup_status, 'removed')
+        self.assertEqual(session.approval_id, approval.id)
+        self.assertEqual(approval.status, 'consumed')
+        self.assertEqual(approval.execution_ref, str(session.session_id))
+        self.assertTrue(AuditEvent.objects.filter(
+            correlation_id=approval.correlation_id,
+            action='file.write',
+            result='succeeded',
+            details__contains='"edit_session_id"',
+        ).exists())
+
+    def test_edit_save_rejects_approval_tampering_without_remote_write(self):
+        files = {'/tmp/app.conf': b'name=old\n'}
+        ssh = EditSSHStub(files)
+        opened = self.open_edit(ssh)
+        session = FileEditSession.objects.get(
+            session_id=opened['data']['session_id']
+        )
+        approval = self.approve_edit(session, 'name=approved\n')
+        denied = self.save_edit(ssh, session, 'name=tampered\n', approval)
+        self.assertIn('参数不匹配', denied['error'])
+        self.assertEqual(files['/tmp/app.conf'], b'name=old\n')
+        session.refresh_from_db()
+        approval.refresh_from_db()
+        self.assertEqual(session.status, 'active')
+        self.assertEqual(approval.status, 'approved')
+
+    def test_edit_save_rejects_external_change_before_consuming_approval(self):
+        files = {'/tmp/app.conf': b'name=old\n'}
+        mtimes = {'/tmp/app.conf': 1700000000}
+        ssh = EditSSHStub(files, mtimes)
+        opened = self.open_edit(ssh)
+        session = FileEditSession.objects.get(
+            session_id=opened['data']['session_id']
+        )
+        content = 'name=mine\n'
+        approval = self.approve_edit(session, content)
+        files['/tmp/app.conf'] = b'name=external\n'
+        mtimes['/tmp/app.conf'] += 1
+        denied = self.save_edit(ssh, session, content, approval)
+        self.assertIn('远端文件已被修改', denied['error'])
+        approval.refresh_from_db()
+        session.refresh_from_db()
+        self.assertEqual(approval.status, 'approved')
+        self.assertEqual(session.status, 'active')
+        self.assertEqual(files['/tmp/app.conf'], b'name=external\n')
+
+    def test_edit_cancel_and_expiry_cleanup_remove_temporary_files(self):
+        files = {
+            '/tmp/app.conf': b'name=old\n',
+            '/tmp/expire.conf': b'expire=true\n',
+        }
+        ssh = EditSSHStub(files)
+        opened = self.open_edit(ssh)
+        session = FileEditSession.objects.get(
+            session_id=opened['data']['session_id']
+        )
+        files[session.temporary_path] = b'partial'
+        request = self.factory.delete(
+            '/file/edit-sessions/%s/' % session.session_id
+        )
+        request.user = self.user
+        with patch('apps.host.models.Host.get_ssh', return_value=ssh):
+            response = EditSessionDetailView.as_view()(
+                request, session_id=session.session_id
+            )
+        self.assertFalse(json.loads(response.content.decode('utf-8'))['error'])
+        session.refresh_from_db()
+        self.assertEqual(session.status, 'cancelled')
+        self.assertEqual(session.cleanup_status, 'removed')
+        self.assertNotIn(session.temporary_path, files)
+
+        opened = self.open_edit(ssh, remote_path='/tmp/expire.conf')
+        expired = FileEditSession.objects.get(
+            session_id=opened['data']['session_id']
+        )
+        files[expired.temporary_path] = b'partial'
+        FileEditSession.objects.filter(pk=expired.id).update(
+            expires_at=datetime.now() - timedelta(seconds=1)
+        )
+        with patch('apps.host.models.Host.get_ssh', return_value=ssh):
+            summary = cleanup_expired_file_edit_sessions(execute=True)
+        self.assertEqual(summary['removed'], 1)
+        expired.refresh_from_db()
+        self.assertEqual(expired.status, 'expired')
+        self.assertEqual(expired.cleanup_status, 'removed')
+
+    def test_edit_rejects_binary_content_and_routes_resolve(self):
+        ssh = EditSSHStub({'/tmp/binary.dat': b'prefix\x00suffix'})
+        denied = self.open_edit(ssh, remote_path='/tmp/binary.dat')
+        self.assertIn('二进制', denied['error'])
+        self.assertIs(
+            resolve('/file/edit-sessions/').func.view_class,
+            EditSessionView,
+        )
+        session_id = uuid.uuid4()
+        self.assertIs(
+            resolve('/file/edit-sessions/%s/' % session_id).func.view_class,
+            EditSessionDetailView,
+        )
+        self.assertIs(
+            resolve('/file/edit-sessions/%s/save/' % session_id).func.view_class,
+            EditSessionSaveView,
+        )
+
+    def test_ssh_edit_read_rejects_symbolic_links(self):
+        class SFTPStub:
+            def lstat(self, path):
+                return SimpleNamespace(
+                    st_size=8,
+                    st_mtime=1700000000,
+                    st_mode=stat.S_IFLNK | 0o777,
+                )
+
+            def open(self, path, mode):
+                raise AssertionError('symbolic link content must not be opened')
+
+        ssh = SSH.__new__(SSH)
+        ssh.sftp = SFTPStub()
+        with self.assertRaises(ValueError):
+            ssh.read_file('/tmp/app-link.conf', 2 * 1024 * 1024)
 
     def test_batch_routes_resolve(self):
         self.assertIs(

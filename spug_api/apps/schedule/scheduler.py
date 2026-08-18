@@ -13,7 +13,10 @@ from apps.schedule.models import Task, History
 from apps.schedule.builtin import auto_run_by_day, auto_run_by_minute
 from apps.account.utils import has_host_perm
 from apps.audit.services import record_event, verify_consumed_approval
-from apps.file.services import cleanup_expired_file_transfers
+from apps.file.services import (
+    cleanup_expired_file_edit_sessions,
+    cleanup_expired_file_transfers,
+)
 from django.conf import settings
 from libs import AttrDict, human_datetime
 import logging
@@ -79,6 +82,11 @@ class Scheduler:
             result = cleanup_expired_file_transfers(execute=True, limit=100)
             if result['eligible']:
                 logging.warning('File transfer cleanup result: %s', result)
+            edit_result = cleanup_expired_file_edit_sessions(
+                execute=True, limit=100
+            )
+            if edit_result['eligible']:
+                logging.warning('File edit cleanup result: %s', edit_result)
         except Exception:
             logging.exception('File transfer cleanup failed')
         finally:

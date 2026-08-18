@@ -8,6 +8,9 @@ from .views import *
 urlpatterns = [
     path('', FileView.as_view()),
     path('object/', ObjectView.as_view()),
+    path('edit-sessions/', EditSessionView.as_view()),
+    path('edit-sessions/<uuid:session_id>/', EditSessionDetailView.as_view()),
+    path('edit-sessions/<uuid:session_id>/save/', EditSessionSaveView.as_view()),
     path('uploads/', UploadSessionView.as_view()),
     path('upload-batches/', UploadBatchView.as_view()),
     path('upload-batches/<uuid:batch_id>/', UploadBatchDetailView.as_view()),

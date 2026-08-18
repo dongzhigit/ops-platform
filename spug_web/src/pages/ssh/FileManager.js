@@ -18,7 +18,7 @@ import {
   UploadOutlined,
   EditOutlined
 } from '@ant-design/icons';
-import { ApprovalGate, AuthButton, Action } from 'components';
+import { ACEditor, ApprovalGate, AuthButton, Action } from 'components';
 import { http, X_TOKEN } from 'libs';
 import { sha256 } from 'js-sha256';
 import lds from 'lodash';
@@ -57,6 +57,7 @@ class FileManager extends React.Component {
     this.input = null;
     this.batchInput = null;
     this.batchContext = null;
+    this.editHeartbeat = null;
     this.pwdHistoryCaches = new Map()
     this.state = {
       fetching: false,
@@ -78,6 +79,11 @@ class FileManager extends React.Component {
       batchModalVisible: false,
       batchRunning: false,
       batchError: null,
+      editSession: null,
+      editContent: '',
+      editOriginalContent: '',
+      editModalVisible: false,
+      editLoading: false,
     }
   }
 
@@ -87,14 +93,35 @@ class FileManager extends React.Component {
 
   componentDidUpdate(prevProps) {
     if (this.props.id !== prevProps.id) {
+      this._stopEditHeartbeat();
+      const session = this.state.editSession;
+      if (session && session.status === 'active') {
+        http.delete(`/api/file/edit-sessions/${session.session_id}/`).catch(() => null);
+      }
       let pwd = this.pwdHistoryCaches.get(this.props.id) || []
-      this.setState({objects: [], pwd})
+      this.setState({
+        objects: [],
+        pwd,
+        editSession: null,
+        editContent: '',
+        editOriginalContent: '',
+        editModalVisible: false,
+        approvalRequest: this.state.approvalRequest
+          && this.state.approvalRequest.kind === 'file-edit'
+          ? null
+          : this.state.approvalRequest,
+      })
       this.fetchFiles(pwd)
     }
   }
 
   componentWillUnmount() {
     if (this.batchContext) this.batchContext.stopRequested = true;
+    this._stopEditHeartbeat();
+    const session = this.state.editSession;
+    if (session && session.status === 'active') {
+      http.delete(`/api/file/edit-sessions/${session.session_id}/`).catch(() => null);
+    }
   }
 
   columns = [{
@@ -129,11 +156,13 @@ class FileManager extends React.Component {
     width: 110
   }, {
     title: '操作',
-    width: 100,
+    width: 140,
     align: 'right',
     key: 'action',
     render: info => info.kind === '-' ? (
       <Action>
+        <Action.Button auth="host.console.upload" className={styles.drawerBtn}
+                       icon={<EditOutlined/>} onClick={() => this.handleEdit(info.name)}/>
         <Action.Button className={styles.drawerBtn} icon={<DownloadOutlined/>}
                        onClick={() => this.handleDownload(info.name)}/>
         <Action.Button danger auth="host.console.del" className={styles.drawerBtn} icon={<DeleteOutlined/>}
@@ -780,6 +809,158 @@ class FileManager extends React.Component {
     this.setState({percent: Number(percent.toFixed(1))})
   };
 
+  handleEdit = async name => {
+    const remotePath = `/${[...this.state.pwd, name].join('/')}`;
+    this.setState({editLoading: true});
+    try {
+      const session = await http.post('/api/file/edit-sessions/', {
+        id: Number(this.props.id),
+        file: remotePath,
+      });
+      this.setState({
+        editSession: session,
+        editContent: session.content,
+        editOriginalContent: session.content,
+        editModalVisible: true,
+      });
+      this._startEditHeartbeat(session.session_id);
+    } catch (error) {
+      return null;
+    } finally {
+      this.setState({editLoading: false});
+    }
+  };
+
+  _startEditHeartbeat = sessionId => {
+    this._stopEditHeartbeat();
+    this.editHeartbeat = window.setInterval(() => {
+      http.patch(`/api/file/edit-sessions/${sessionId}/`, {
+        action: 'heartbeat',
+      }).then(session => {
+        if (this.state.editSession
+          && this.state.editSession.session_id === sessionId) {
+          this.setState({editSession: {...this.state.editSession, ...session}});
+        }
+      }).catch(() => {
+        this._stopEditHeartbeat();
+        message.warning('在线编辑锁续期失败，保存前请重新打开文件核对版本');
+      });
+    }, 5 * 60 * 1000);
+  };
+
+  _stopEditHeartbeat = () => {
+    if (this.editHeartbeat) {
+      window.clearInterval(this.editHeartbeat);
+      this.editHeartbeat = null;
+    }
+  };
+
+  releaseEdit = async () => {
+    const session = this.state.editSession;
+    this._stopEditHeartbeat();
+    if (session && session.status === 'active') {
+      await http.delete(`/api/file/edit-sessions/${session.session_id}/`);
+    }
+    this.setState({
+      editSession: null,
+      editContent: '',
+      editOriginalContent: '',
+      editModalVisible: false,
+      approvalRequest: this.state.approvalRequest
+        && this.state.approvalRequest.kind === 'file-edit'
+        ? null
+        : this.state.approvalRequest,
+    });
+  };
+
+  requestCloseEdit = () => {
+    if (this.state.editContent !== this.state.editOriginalContent) {
+      Modal.confirm({
+        title: '放弃未保存的修改？',
+        content: '关闭后将释放编辑锁，本地修改不会写入远端文件。',
+        onOk: this.releaseEdit,
+      });
+    } else {
+      this.releaseEdit().catch(() => null);
+    }
+  };
+
+  prepareEditSave = () => {
+    const session = this.state.editSession;
+    if (!session || session.status !== 'active') {
+      message.error('在线编辑锁已失效，请重新打开文件');
+      return;
+    }
+    const content = this.state.editContent;
+    const size = new Blob([content]).size;
+    if (size > 2 * 1024 * 1024) {
+      message.error('在线编辑内容不能超过 2 MiB');
+      return;
+    }
+    const contentSha256 = sha256(content);
+    const payload = {
+      host_ids: [session.host_id],
+      file: session.remote_path,
+      base_etag: session.base_etag,
+      base_sha256: session.base_sha256,
+      size,
+      sha256: contentSha256,
+      encoding: 'utf-8',
+      conflict_strategy: 'reject_on_change',
+    };
+    this.setState({
+      approvalRequest: {
+        kind: 'file-edit',
+        operation: {
+          action: 'file.write',
+          resource_type: 'host',
+          resource_ids: [session.host_id],
+          payload,
+        },
+        editSession: session,
+        editContent: content,
+        editSha256: contentSha256,
+        summary: `在线编辑主机 ${session.host_id} 文件 ${session.remote_path}`,
+      },
+    });
+  };
+
+  executeEditSave = async (request, approvalId) => {
+    try {
+      const session = await http.post(
+        `/api/file/edit-sessions/${request.editSession.session_id}/save/`,
+        {
+          content: request.editContent,
+          sha256: request.editSha256,
+          base_etag: request.editSession.base_etag,
+          base_sha256: request.editSession.base_sha256,
+          approval_id: approvalId,
+        },
+      );
+      this._stopEditHeartbeat();
+      this.setState({
+        editSession: session,
+        editOriginalContent: request.editContent,
+        editModalVisible: false,
+        approvalRequest: null,
+      });
+      message.success(`文件已安全保存，SHA-256：${request.editSha256}`);
+      await this.fetchFiles();
+      return session;
+    } catch (error) {
+      this.setState({approvalRequest: null});
+      return Promise.reject(error);
+    }
+  };
+
+  _editMode = filename => {
+    const extension = (filename.split('.').pop() || '').toLowerCase();
+    if (extension === 'json') return 'json';
+    if (extension === 'py') return 'python';
+    if (['sh', 'bash', 'zsh'].includes(extension)) return 'sh';
+    return 'text';
+  };
+
   _downloadFile = name => {
     const file = `/${[...this.state.pwd, name].join('/')}`;
     const link = document.createElement('a');
@@ -1033,6 +1214,46 @@ class FileManager extends React.Component {
             columns={batchColumns}
             dataSource={this.state.batchItems}/>
         </Modal>
+        <Modal
+          title={this.state.editSession
+            ? `在线编辑 · ${this.state.editSession.remote_path}`
+            : '在线编辑'}
+          visible={this.state.editModalVisible}
+          width={920}
+          maskClosable={false}
+          onCancel={this.requestCloseEdit}
+          footer={(
+            <div>
+              <Button onClick={this.requestCloseEdit}>取消并释放锁</Button>
+              <Button type="primary" loading={this.state.editLoading}
+                      disabled={!this.state.editSession
+                        || this.state.editContent === this.state.editOriginalContent}
+                      onClick={this.prepareEditSave}>
+                审批并保存
+              </Button>
+            </div>
+          )}>
+          {this.state.editSession && (
+            <React.Fragment>
+              <div style={{marginBottom: 10, color: '#666'}}>
+                <span style={{marginRight: 16}}>
+                  基础 SHA-256：{this.state.editSession.base_sha256}
+                </span>
+                <span>锁有效至：{this.state.editSession.expires_at}</span>
+              </div>
+              <ACEditor
+                mode={this._editMode(this.state.editSession.filename)}
+                value={this.state.editContent}
+                width="100%"
+                height="520px"
+                setOptions={{useWorker: false}}
+                onChange={editContent => this.setState({editContent})}/>
+              <div style={{marginTop: 8, color: '#999'}}>
+                仅支持 UTF-8 普通文本且最大 2 MiB；保存前会再次校验远端版本，外部修改不会被覆盖。
+              </div>
+            </React.Fragment>
+          )}
+        </Modal>
         {approvalRequest && (
           <ApprovalGate
             operation={approvalRequest.operation}
@@ -1041,7 +1262,9 @@ class FileManager extends React.Component {
             onExecute={approvalId => approvalRequest.operation.action === 'file.write'
               ? approvalRequest.kind === 'batch-upload'
                 ? this.executeBatchUpload(approvalRequest, approvalId)
-                : this.executeUpload(approvalRequest, approvalId)
+                : approvalRequest.kind === 'file-edit'
+                  ? this.executeEditSave(approvalRequest, approvalId)
+                  : this.executeUpload(approvalRequest, approvalId)
               : this.executeDelete(approvalRequest, approvalId)}/>
         )}
       </React.Fragment>
