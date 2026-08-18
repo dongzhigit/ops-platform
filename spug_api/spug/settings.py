@@ -40,6 +40,7 @@ INSTALLED_APPS = [
     'apps.account',
     'apps.audit',
     'apps.assets',
+    'apps.gateway',
     'apps.file',
     'apps.host',
     'apps.setting',
@@ -137,10 +138,11 @@ AUTHENTICATION_EXCLUDES = (
     '/account/login/',
     '/setting/basic/',
     re.compile('/apis/.*'),
+    re.compile(r'^/v1/gateway/sessions/[0-9a-f-]+/launch/$'),
 )
 
 SPUG_VERSION = 'v3.4.0'
-OPS_PLATFORM_VERSION = os.environ.get('OPS_PLATFORM_VERSION', '0.1.0-alpha.8')
+OPS_PLATFORM_VERSION = os.environ.get('OPS_PLATFORM_VERSION', '0.1.0-alpha.9')
 
 # override default config
 try:
@@ -163,6 +165,11 @@ SPUG_CREDENTIAL_MASTER_KEY = _security['credential_master_key']
 SPUG_CREDENTIAL_MASTER_KEYS = _security['credential_master_keys']
 SPUG_CREDENTIAL_PRIMARY_KEY_ID = _security['credential_primary_key_id']
 SPUG_AUDIT_SIGNING_KEY = _security['audit_signing_key']
+SPUG_REMOTE_GATEWAY_ENABLED = _security['remote_gateway_enabled']
+SPUG_GUACAMOLE_JSON_SECRET_KEY = _security['guacamole_json_secret_key']
+SPUG_GUACAMOLE_PUBLIC_URL = _security['guacamole_public_url']
+SPUG_REMOTE_TICKET_TTL = _security['remote_ticket_ttl']
+SPUG_GUACAMOLE_AUTH_TTL = _security['guacamole_auth_ttl']
 SECRET_KEY = _security['secret_key']
 DEBUG = _security['debug']
 ALLOWED_HOSTS = _security['allowed_hosts']

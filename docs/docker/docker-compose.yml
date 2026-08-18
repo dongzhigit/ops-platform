@@ -24,6 +24,50 @@ services:
     networks:
       - backend
 
+  guacd:
+    image: guacamole/guacd:1.6.0
+    container_name: spug-guacd
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 4822 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    networks:
+      - remote_gateway
+
+  guacamole:
+    image: guacamole/guacamole:1.6.0
+    container_name: spug-guacamole
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      GUACD_HOSTNAME: guacd
+      GUACD_PORT: 4822
+      JSON_ENABLED: "true"
+      JSON_SECRET_KEY: ${SPUG_GUACAMOLE_JSON_SECRET_KEY:?SPUG_GUACAMOLE_JSON_SECRET_KEY is required}
+      # Preserve real client IPs so Guacamole's built-in ban extension does
+      # not treat every user behind the Spug proxy as one shared address.
+      REMOTE_IP_VALVE_ENABLED: "true"
+      REMOTE_IP_VALVE_REMOTE_IP_HEADER: X-Forwarded-For
+      REMOTE_IP_VALVE_PROTOCOL_HEADER: X-Forwarded-Proto
+    depends_on:
+      guacd:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/guacamole/ >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    networks:
+      - frontend
+      - remote_gateway
+
   spug:
     # The legacy M0 image currently depends on CentOS 7 x86_64 packages.
     platform: ${SPUG_PLATFORM:-linux/amd64}
@@ -58,6 +102,11 @@ services:
       SPUG_CREDENTIAL_KEYRING: ${SPUG_CREDENTIAL_KEYRING:-}
       SPUG_CREDENTIAL_PRIMARY_KEY_ID: ${SPUG_CREDENTIAL_PRIMARY_KEY_ID:-primary}
       SPUG_AUDIT_SIGNING_KEY: ${SPUG_AUDIT_SIGNING_KEY:?SPUG_AUDIT_SIGNING_KEY is required}
+      SPUG_REMOTE_GATEWAY_ENABLED: ${SPUG_REMOTE_GATEWAY_ENABLED:-true}
+      SPUG_GUACAMOLE_JSON_SECRET_KEY: ${SPUG_GUACAMOLE_JSON_SECRET_KEY:?SPUG_GUACAMOLE_JSON_SECRET_KEY is required}
+      SPUG_GUACAMOLE_PUBLIC_URL: ${SPUG_GUACAMOLE_PUBLIC_URL:-/guacamole}
+      SPUG_REMOTE_TICKET_TTL: ${SPUG_REMOTE_TICKET_TTL:-60}
+      SPUG_GUACAMOLE_AUTH_TTL: ${SPUG_GUACAMOLE_AUTH_TTL:-60}
       SPUG_ALLOWED_HOSTS: ${SPUG_ALLOWED_HOSTS:?SPUG_ALLOWED_HOSTS is required}
       SPUG_CSRF_TRUSTED_ORIGINS: ${SPUG_CSRF_TRUSTED_ORIGINS:-}
       SPUG_SECURE_COOKIES: ${SPUG_SECURE_COOKIES:-true}
@@ -69,6 +118,8 @@ services:
       MYSQL_PORT: 3306
     depends_on:
       db:
+        condition: service_healthy
+      guacamole:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1/ >/dev/null || exit 1"]
@@ -84,3 +135,6 @@ networks:
   frontend:
   backend:
     internal: true
+  # guacd needs outbound access to managed RDP/VNC hosts. Do not publish its
+  # port; restrict this bridge's egress with the host firewall in production.
+  remote_gateway:

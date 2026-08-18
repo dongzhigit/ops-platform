@@ -19,6 +19,16 @@ require_env MYSQL_PASSWORD
 require_env MYSQL_HOST
 require_env MYSQL_PORT
 
+remote_gateway_enabled="${SPUG_REMOTE_GATEWAY_ENABLED:-false}"
+remote_gateway_enabled="${remote_gateway_enabled,,}"
+if [[ "$remote_gateway_enabled" =~ ^(1|true|yes|on)$ ]]; then
+    require_env SPUG_GUACAMOLE_JSON_SECRET_KEY
+    if ! [[ "$SPUG_GUACAMOLE_JSON_SECRET_KEY" =~ ^[0-9a-fA-F]{32}$ ]]; then
+        echo "error: SPUG_GUACAMOLE_JSON_SECRET_KEY must contain exactly 32 hexadecimal characters" >&2
+        exit 1
+    fi
+fi
+
 if [ "${#SPUG_SECRET_KEY}" -lt 32 ]; then
     echo "error: SPUG_SECRET_KEY must contain at least 32 characters" >&2
     exit 1

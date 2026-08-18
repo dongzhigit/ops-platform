@@ -126,7 +126,11 @@ class AuditEvent(models.Model, ModelMixin):
         ('cancelled', '已撤销'),
         ('denied', '已拒绝'),
         ('queued', '已入队'),
+        ('issued', '已签发'),
         ('started', '已开始'),
+        ('launched', '已启动'),
+        ('closed', '已关闭'),
+        ('expired', '已过期'),
         ('succeeded', '成功'),
         ('failed', '失败'),
     )

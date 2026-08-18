@@ -30,6 +30,7 @@ export default [{
     label: 'Web终端',
     perms: [
       {key: 'view', label: 'Web终端'},
+      {key: 'remote', label: 'RDP/VNC远程桌面'},
       {key: 'list', label: '文件管理'},
       {key: 'upload', label: '上传文件'},
       {key: 'del', label: '删除文件'},

@@ -10,9 +10,10 @@ cp .env.example .env
 openssl rand -base64 48
 openssl rand -base64 32
 openssl rand -base64 48
+openssl rand -hex 16
 ```
 
-将三个独立生成的值依次写入 `.env` 的 `SPUG_SECRET_KEY`、`SPUG_CREDENTIAL_MASTER_KEY` 和 `SPUG_AUDIT_SIGNING_KEY`。随后填写数据库口令、正式域名和 HTTPS 来源，然后执行：
+将四个独立生成的值依次写入 `.env` 的 `SPUG_SECRET_KEY`、`SPUG_CREDENTIAL_MASTER_KEY`、`SPUG_AUDIT_SIGNING_KEY` 和 `SPUG_GUACAMOLE_JSON_SECRET_KEY`。随后填写数据库口令、正式域名和 HTTPS 来源，然后执行：
 
 ```bash
 docker compose config --quiet
@@ -28,13 +29,14 @@ docker compose ps
 docker exec spug init_spug admin '请替换为高强度密码'
 ```
 
-资产凭据、对象授权、旧私钥迁移和主密钥轮换说明见 [M1 资产、凭据与对象授权](../M1_ASSET_ACCESS.md)，高风险操作流程见 [M1 高风险操作审批与审计](../M1_APPROVAL_AUDIT.md)。
+资产凭据、对象授权、旧私钥迁移和主密钥轮换说明见 [M1 资产、凭据与对象授权](../M1_ASSET_ACCESS.md)，高风险操作流程见 [M1 高风险操作审批与审计](../M1_APPROVAL_AUDIT.md)，RDP/VNC 网关配置和当前边界见 [M3 RDP/VNC 安全接入](../M3_REMOTE_DESKTOP.md)。
 
 ## 网络与 TLS
 
 - 默认 `SPUG_BIND_HOST=127.0.0.1`，应通过 Caddy、Nginx 或负载均衡器提供 HTTPS。
 - 只有在可信内网且有防火墙保护时，才将绑定地址改为 `0.0.0.0`。
 - 反向代理必须设置 `X-Forwarded-Proto`，使用 HTTPS 时保持 `SPUG_SECURE_COOKIES=true`。
+- 外层反向代理必须关闭或脱敏 `/api/v1/gateway/sessions/*/launch/` 与 `/guacamole/` 的查询字符串日志。
 - 若由外部代理完成 HTTPS 跳转，`SPUG_SSL_REDIRECT` 可保持 `false`，避免配置错误造成循环重定向。
 
 ## 权限说明
@@ -52,4 +54,5 @@ M0 镜像仍依赖 CentOS 7/Python 3.6，并临时锁定为 `linux/amd64`；ARM 
 - 已执行数据库备份和恢复演练。
 - `SPUG_CREDENTIAL_MASTER_KEY` 已独立备份并完成凭据恢复演练。
 - 管理员启用独立强密码，不与主机或数据库复用。
-- `docker compose ps` 中数据库和 Spug 服务均为 healthy。
+- 已用防火墙限制 guacd 只能访问批准的 RDP/VNC 目标网段和端口。
+- `docker compose ps` 中数据库、Guacamole 和 Spug 服务状态正常。

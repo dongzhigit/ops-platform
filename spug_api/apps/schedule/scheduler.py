@@ -17,6 +17,7 @@ from apps.file.services import (
     cleanup_expired_file_edit_sessions,
     cleanup_expired_file_transfers,
 )
+from apps.gateway.services import expire_remote_access_sessions
 from django.conf import settings
 from libs import AttrDict, human_datetime
 import logging
@@ -75,6 +76,14 @@ class Scheduler:
             max_instances=1,
             coalesce=True,
         )
+        self.scheduler.add_job(
+            self._cleanup_remote_sessions,
+            'interval',
+            minutes=5,
+            id='builtin:remote-session-cleanup',
+            max_instances=1,
+            coalesce=True,
+        )
 
     @staticmethod
     def _cleanup_file_transfers():
@@ -89,6 +98,17 @@ class Scheduler:
                 logging.warning('File edit cleanup result: %s', edit_result)
         except Exception:
             logging.exception('File transfer cleanup failed')
+        finally:
+            connections.close_all()
+
+    @staticmethod
+    def _cleanup_remote_sessions():
+        try:
+            result = expire_remote_access_sessions(limit=500)
+            if result['expired']:
+                logging.warning('Remote session cleanup result: %s', result)
+        except Exception:
+            logging.exception('Remote session cleanup failed')
         finally:
             connections.close_all()
 

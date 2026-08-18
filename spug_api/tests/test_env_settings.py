@@ -2,12 +2,19 @@ import base64
 import json
 from unittest import TestCase
 
-from spug.env_settings import env_bool, env_list, load_security_settings, validate_master_key
+from spug.env_settings import (
+    env_bool,
+    env_list,
+    load_security_settings,
+    validate_guacamole_key,
+    validate_master_key,
+)
 
 
 MASTER_KEY = base64.b64encode(b'k' * 32).decode('ascii')
 ROTATED_KEY = base64.b64encode(b'r' * 32).decode('ascii')
 AUDIT_KEY = 'audit-signing-key-that-is-independent-and-long'
+GUACAMOLE_KEY = '00' * 16
 
 
 class EnvSettingsTest(TestCase):
@@ -23,6 +30,8 @@ class EnvSettingsTest(TestCase):
         self.assertTrue(result['debug'])
         self.assertEqual(result['secret_key'], 'development-secret')
         self.assertEqual(result['allowed_hosts'], ['127.0.0.1'])
+        self.assertTrue(result['remote_gateway_enabled'])
+        self.assertEqual(len(result['guacamole_json_secret_key']), 32)
 
     def test_production_requires_explicit_secret_and_hosts(self):
         with self.assertRaisesRegex(ValueError, 'SPUG_SECRET_KEY'):
@@ -192,4 +201,58 @@ class EnvSettingsTest(TestCase):
                 default_debug=True,
                 default_allowed_hosts=['127.0.0.1'],
                 environ=dict(common, SPUG_AUDIT_SIGNING_KEY=common['SPUG_SECRET_KEY']),
+            )
+
+    def test_production_remote_gateway_requires_independent_explicit_key(self):
+        common = {
+            'SPUG_ENV': 'production',
+            'SPUG_SECRET_KEY': 'a-production-secret-with-32-characters',
+            'SPUG_CREDENTIAL_MASTER_KEY': MASTER_KEY,
+            'SPUG_AUDIT_SIGNING_KEY': AUDIT_KEY,
+            'SPUG_ALLOWED_HOSTS': 'ops.example.com',
+            'SPUG_REMOTE_GATEWAY_ENABLED': 'true',
+        }
+        with self.assertRaisesRegex(ValueError, 'SPUG_GUACAMOLE_JSON_SECRET_KEY'):
+            load_security_settings(
+                default_secret='development-secret',
+                default_debug=True,
+                default_allowed_hosts=['127.0.0.1'],
+                environ=common,
+            )
+
+        result = load_security_settings(
+            default_secret='development-secret',
+            default_debug=True,
+            default_allowed_hosts=['127.0.0.1'],
+            environ=dict(
+                common,
+                SPUG_GUACAMOLE_JSON_SECRET_KEY=GUACAMOLE_KEY,
+                SPUG_GUACAMOLE_PUBLIC_URL='/remote/',
+                SPUG_REMOTE_TICKET_TTL='45',
+                SPUG_GUACAMOLE_AUTH_TTL='30',
+            ),
+        )
+        self.assertTrue(result['remote_gateway_enabled'])
+        self.assertEqual(result['guacamole_json_secret_key'], GUACAMOLE_KEY)
+        self.assertEqual(result['guacamole_public_url'], '/remote')
+        self.assertEqual(result['remote_ticket_ttl'], 45)
+        self.assertEqual(result['guacamole_auth_ttl'], 30)
+
+    def test_remote_gateway_rejects_unsafe_url_key_and_ttl(self):
+        with self.assertRaisesRegex(ValueError, '32 hexadecimal'):
+            validate_guacamole_key('not-a-key')
+        for public_url in ('https://remote.example.com/guacamole', '//remote/guacamole', '/guacamole/?x=1'):
+            with self.assertRaisesRegex(ValueError, 'SPUG_GUACAMOLE_PUBLIC_URL'):
+                load_security_settings(
+                    default_secret='development-secret',
+                    default_debug=True,
+                    default_allowed_hosts=['127.0.0.1'],
+                    environ={'SPUG_GUACAMOLE_PUBLIC_URL': public_url},
+                )
+        with self.assertRaisesRegex(ValueError, 'between 15 and 300'):
+            load_security_settings(
+                default_secret='development-secret',
+                default_debug=True,
+                default_allowed_hosts=['127.0.0.1'],
+                environ={'SPUG_REMOTE_TICKET_TTL': '600'},
             )

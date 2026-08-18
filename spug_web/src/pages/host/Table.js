@@ -3,18 +3,20 @@
  * Copyright (c) <spug.dev@gmail.com>
  * Released under the AGPL-3.0 License.
  */
-import React from 'react';
+import React, { useState } from 'react';
 import { observer } from 'mobx-react';
 import { Table, Modal, Dropdown, Button, Menu, Avatar, Tooltip, Space, Tag, Radio, Input, message } from 'antd';
 import { PlusOutlined, DownOutlined, SyncOutlined, FormOutlined } from '@ant-design/icons';
 import { Action, TableCard, AuthButton, AuthFragment } from 'components';
 import IPAddress from './IPAddress';
+import RemoteDesktop from './RemoteDesktop';
 import { http, hasPermission } from 'libs';
 import store from './store';
 import icons from './icons';
 import moment from 'moment';
 
 function ComTable() {
+  const [remoteHost, setRemoteHost] = useState();
   function handleDelete(text) {
     Modal.confirm({
       title: '删除确认',
@@ -55,6 +57,7 @@ function ComTable() {
   }
 
   return (
+    <React.Fragment>
     <TableCard
       tKey="hi"
       rowKey="id"
@@ -138,15 +141,18 @@ function ComTable() {
         title="状态"
         dataIndex="is_verified"
         render={v => v ? <Tag color="green">已验证</Tag> : <Tag color="orange">未验证</Tag>}/>
-      {hasPermission('host.host.edit|host.host.del|host.host.console') && (
-        <Table.Column width={160} title="操作" render={info => (
+      {hasPermission('host.host.edit|host.host.del|host.console.remote') && (
+        <Table.Column width={230} title="操作" render={info => (
           <Action>
+            <Action.Button auth="host.console.remote" onClick={() => setRemoteHost(info)}>远程桌面</Action.Button>
             <Action.Button auth="host.host.edit" onClick={() => store.showForm(info)}>编辑</Action.Button>
             <Action.Button danger auth="host.host.del" onClick={() => handleDelete(info)}>删除</Action.Button>
           </Action>
         )}/>
       )}
     </TableCard>
+    {remoteHost && <RemoteDesktop host={remoteHost} onClose={() => setRemoteHost(undefined)}/>}
+    </React.Fragment>
   )
 }
 

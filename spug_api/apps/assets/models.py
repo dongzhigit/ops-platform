@@ -175,6 +175,8 @@ class AccessGrant(models.Model, ModelMixin):
     ACTIONS = {
         'host.view',
         'ssh.connect',
+        'rdp.connect',
+        'vnc.connect',
         'file.read',
         'file.write',
         'file.distribute',
