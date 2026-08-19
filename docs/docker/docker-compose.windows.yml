@@ -1,0 +1,43 @@
+# Docker Desktop for Windows override.
+#
+# Start with:
+#   docker compose -f docker-compose.yml -f docker-compose.windows.yml up -d
+#
+# Docker Desktop runs the application in its Linux VM, but it cannot expose
+# the Windows host's /proc, /sys or /dev/fuse to Linux containers. Managed
+# hosts are still monitored through Prometheus HTTP service discovery.
+
+services:
+  db:
+    container_name: !reset null
+    # MariaDB/InnoDB requires Linux filesystem semantics. A Windows bind
+    # mount can fail table creation with errno 135 even when disk space is
+    # available, so keep database files inside Docker Desktop's Linux VHD.
+    volumes: !override
+      - mysql_data:/var/lib/mysql
+
+  guacd:
+    container_name: !reset null
+
+  guacamole:
+    container_name: !reset null
+
+  alertmanager:
+    container_name: !reset null
+
+  prometheus:
+    container_name: !reset null
+
+  node-exporter:
+    container_name: !reset null
+    profiles:
+      - linux-host-monitoring
+
+  spug:
+    container_name: !reset null
+    cap_add: !reset []
+    devices: !reset []
+    security_opt: !reset []
+
+volumes:
+  mysql_data:

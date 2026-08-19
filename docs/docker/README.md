@@ -67,6 +67,20 @@ chmod 400 secrets/aiops_api_key
 
 当前容器基线面向 Linux 主机；Docker Desktop 通常不提供可直接映射的 `/dev/fuse`。在 macOS/Windows 上仅做界面开发时，可删除上述 FUSE 配置并暂不使用 SSHFS 文件分发。
 
+### Windows Docker Desktop
+
+Windows 主机必须将 Docker Desktop 切换为 Linux containers。使用仓库提供的覆盖文件启动：
+
+```powershell
+docker compose -f docker-compose.yml -f docker-compose.windows.yml config --quiet
+docker compose -f docker-compose.yml -f docker-compose.windows.yml up -d
+docker compose -f docker-compose.yml -f docker-compose.windows.yml ps
+```
+
+覆盖文件禁用仅用于 Linux 宿主机采集的本地 `node-exporter`，但不会影响 Prometheus 通过 HTTP 服务发现采集已纳管主机；同时移除 Docker Desktop 无法提供的 `/dev/fuse`、`SYS_ADMIN` 和 AppArmor 配置。因此在线 SFTP 上传、下载和编辑仍可使用，依赖容器内 SSHFS 挂载的批量文件分发不可用。MariaDB 数据目录会自动改用 Docker 命名卷，避免在 Windows NTFS 绑定挂载上触发 InnoDB 建表错误；备份数据库时应通过 MariaDB 工具导出，不要直接复制 VHD 内的卷文件。
+
+覆盖文件也取消固定容器名，可用 `-p` 在不影响现有实例的情况下启动并行预发布环境，例如在上述命令中加入 `-p spug-ops-preview`。
+
 M0 镜像仍依赖 CentOS 7/Python 3.6，并临时锁定为 `linux/amd64`；ARM 主机会通过模拟运行，性能不适合作为正式生产方案。Dockerfile 使用归档软件源保证过渡期可构建，后续必须迁移到仍受安全支持的操作系统、Python 和 Django 版本。
 
 ## 上线前检查
