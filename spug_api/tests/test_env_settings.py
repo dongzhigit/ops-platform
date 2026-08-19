@@ -327,6 +327,20 @@ class EnvSettingsTest(TestCase):
                     SPUG_AIOPS_API_KEY='independent-ai-provider-key',
                 ),
             )
+        private_result = load_security_settings(
+            default_secret='development-secret',
+            default_debug=True,
+            default_allowed_hosts=['127.0.0.1'],
+            environ=dict(
+                common,
+                SPUG_AIOPS_BASE_URL='http://192.168.30.106:3000/v1',
+                SPUG_AIOPS_API_KEY='independent-ai-provider-key',
+            ),
+        )
+        self.assertEqual(
+            private_result['aiops_base_url'],
+            'http://192.168.30.106:3000/v1',
+        )
         result = load_security_settings(
             default_secret='development-secret',
             default_debug=True,

@@ -1,11 +1,16 @@
 import hmac
 from datetime import datetime
+from urllib.parse import urlsplit
 
 from django.conf import settings
 from django.db import transaction
 
 from apps.assets.encryption import CredentialEncryptionError
-from spug.env_settings import validate_model_name, validate_service_url
+from spug.env_settings import (
+    is_private_http_service_url,
+    validate_model_name,
+    validate_service_url,
+)
 
 from .models import AIProviderConfig
 
@@ -95,8 +100,11 @@ def save_runtime_config(*, actor, values):
         model = validate_model_name(values['model'], name='模型名称', required=values['enabled'])
     except ValueError as exc:
         raise AIConfigError(str(exc))
-    if settings.SPUG_ENV == 'production' and not base_url.startswith('https://'):
-        raise AIConfigError('生产模式下模型服务地址必须使用 HTTPS')
+    if (
+            settings.SPUG_ENV == 'production'
+            and urlsplit(base_url).scheme != 'https'
+            and not is_private_http_service_url(base_url)):
+        raise AIConfigError('生产模式下公网模型服务地址必须使用 HTTPS；内网 IP 可使用 HTTP')
 
     with transaction.atomic():
         defaults = _environment_config()

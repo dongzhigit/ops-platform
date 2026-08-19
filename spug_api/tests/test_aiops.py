@@ -287,6 +287,21 @@ class AIOpsTest(TestCase):
         provider.refresh_from_db()
         self.assertFalse(provider.has_api_key)
 
+    @override_settings(SPUG_ENV='production')
+    def test_page_config_allows_private_http_model_service(self):
+        request = self.request(
+            'post', '/v1/aiops/config/', self.admin,
+            self.config_payload(base_url='http://192.168.30.106:3000/v1'),
+        )
+        response = AIConfigView.as_view()(request)
+        data = body(response)
+        self.assertEqual(data['error'], '')
+        self.assertEqual(
+            data['data']['base_url'],
+            'http://192.168.30.106:3000/v1',
+        )
+        self.assertTrue(data['data']['api_key_configured'])
+
     @override_settings(SPUG_ENV='production', SPUG_AIOPS_API_KEY='')
     def test_page_config_can_be_saved_disabled_before_model_key_is_available(self):
         request = self.request(

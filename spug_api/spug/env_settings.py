@@ -2,6 +2,7 @@ import os
 import base64
 import binascii
 import hashlib
+import ipaddress
 import json
 from urllib.parse import urlsplit
 
@@ -109,6 +110,36 @@ def validate_service_url(value, *, name):
     if parsed.username or parsed.password or parsed.query or parsed.fragment:
         raise ValueError('%s cannot contain credentials, a query string or fragment' % name)
     return value
+
+
+def is_private_http_service_url(value):
+    """Return whether an HTTP URL is confined to a well-known private target.
+
+    Hostnames are intentionally not resolved here: accepting an arbitrary DNS
+    name based on its current answer would make this check vulnerable to DNS
+    rebinding. Docker Desktop's two stable host aliases are explicit exceptions.
+    """
+    parsed = urlsplit(str(value).strip())
+    if parsed.scheme != 'http':
+        return False
+    hostname = (parsed.hostname or '').strip().lower().rstrip('.')
+    if hostname in {'localhost', 'host.docker.internal', 'gateway.docker.internal'}:
+        return True
+    try:
+        address = ipaddress.ip_address(hostname)
+    except ValueError:
+        return False
+    networks = (
+        ipaddress.ip_network('10.0.0.0/8'),
+        ipaddress.ip_network('172.16.0.0/12'),
+        ipaddress.ip_network('192.168.0.0/16'),
+        ipaddress.ip_network('127.0.0.0/8'),
+        ipaddress.ip_network('169.254.0.0/16'),
+        ipaddress.ip_network('::1/128'),
+        ipaddress.ip_network('fc00::/7'),
+        ipaddress.ip_network('fe80::/10'),
+    )
+    return any(address in network for network in networks if address.version == network.version)
 
 
 def validate_model_name(value, *, name='SPUG_AIOPS_MODEL', required=False):
@@ -261,9 +292,12 @@ def load_security_settings(*, default_secret, default_debug, default_allowed_hos
                 raise ValueError(
                     'SPUG_AIOPS_BASE_URL is required when production AI operations is enabled'
                 )
-            if urlsplit(aiops_base_url).scheme != 'https':
+            if (
+                    urlsplit(aiops_base_url).scheme != 'https'
+                    and not is_private_http_service_url(aiops_base_url)):
                 raise ValueError(
-                    'SPUG_AIOPS_BASE_URL must use HTTPS when production AI operations is enabled'
+                    'SPUG_AIOPS_BASE_URL must use HTTPS unless it points to a loopback, '
+                    'Docker-internal, or RFC1918 private address'
                 )
             if not provided_aiops_key:
                 raise ValueError(

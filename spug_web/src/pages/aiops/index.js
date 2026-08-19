@@ -94,7 +94,7 @@ function ModelConfigModal({visible, config, onCancel, onSuccess}) {
             <Form.Item
               name="base_url"
               label="API 根地址"
-              extra={`填写包含 /v1 的根地址，系统将自动追加 ${apiFormat === 'anthropic' ? '/messages' : '/chat/completions'}；生产模式必须使用 HTTPS。`}
+              extra={`填写包含 /v1 的根地址，系统将自动追加 ${apiFormat === 'anthropic' ? '/messages' : '/chat/completions'}；公网地址必须使用 HTTPS，回环、Docker 内部地址和内网 IP 可使用 HTTP。`}
               rules={[
                 {required: true, message: '请输入模型服务地址'},
                 {max: 500, message: '地址不能超过 500 个字符'},

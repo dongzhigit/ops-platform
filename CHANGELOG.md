@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.0-alpha.14 - 2026-08-19
+
+- AI 模型页面允许回环地址、Docker 内部主机名和 RFC1918 内网 IP 在生产模式下使用 HTTP，适配无 TLS 的隔离内网模型网关。
+- 公网域名和公网 IP 的 HTTP 地址继续被拒绝；校验不根据普通 DNS 的临时解析结果放行，避免 DNS 重绑定绕过。
+- 页面提示和部署文档同步区分公网 HTTPS 与可信内网 HTTP，并明确内网 HTTP 不提供传输加密。
+- MariaDB 完整 110 项测试通过（2 项外部条件跳过），React 生产构建通过。
+
 ## 0.1.0-alpha.13 - 2026-08-19
 
 - AI 模型页面新增 API 格式选择，支持 OpenAI Chat Completions 与 Anthropic Messages 原生协议并即时切换。

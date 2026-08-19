@@ -47,7 +47,7 @@ printf '%s' '替换为独立的模型服务密钥' > secrets/aiops_api_key
 chmod 400 secrets/aiops_api_key
 ```
 
-同时设置 `SPUG_AIOPS_API_KEY_FILE=/run/spug-secrets/aiops_api_key`。根地址应包含 `/v1`，系统会按所选格式追加 `/chat/completions` 或 `/messages`。生产模式下，无论页面还是环境配置都要求模型地址使用 HTTPS。若 OpenAI 兼容服务不支持 `response_format=json_object`，可关闭页面中的 JSON Object 模式或设置 `SPUG_AIOPS_JSON_MODE=false`；Anthropic 格式会忽略该设置。后端始终严格解析和校验 JSON，并按响应字节上限流式限制响应体。不要把模型密钥写入镜像、Git 或浏览器持久存储。
+同时设置 `SPUG_AIOPS_API_KEY_FILE=/run/spug-secrets/aiops_api_key`。根地址应包含 `/v1`，系统会按所选格式追加 `/chat/completions` 或 `/messages`。生产模式下公网模型地址必须使用 HTTPS；回环地址、Docker 内部地址和 RFC1918 内网 IP 可使用 HTTP。内网 HTTP 不提供传输加密，只应在可信隔离网络中使用，不能经过不受信任的代理或网络。若 OpenAI 兼容服务不支持 `response_format=json_object`，可关闭页面中的 JSON Object 模式或设置 `SPUG_AIOPS_JSON_MODE=false`；Anthropic 格式会忽略该设置。后端始终严格解析和校验 JSON，并按响应字节上限流式限制响应体。不要把模型密钥写入镜像、Git 或浏览器持久存储。
 
 调查时会把当前用户有权访问的主机基础信息、指标、告警摘要和已发布知识片段发送给所配置的模型服务。使用外部供应商前必须确认数据分类、跨境、保留与审计要求；敏感环境优先使用受控内网模型服务。当前模型没有执行工具，不能运行 Shell、SSH、发布或配置变更。
 
