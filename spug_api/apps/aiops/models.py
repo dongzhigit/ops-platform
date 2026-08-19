@@ -17,8 +17,14 @@ def _json(value, fallback):
 
 
 class AIProviderConfig(models.Model, ModelMixin):
+    API_FORMATS = (
+        ('openai', 'OpenAI Chat Completions'),
+        ('anthropic', 'Anthropic Messages'),
+    )
+
     id = models.PositiveSmallIntegerField(primary_key=True, default=1, editable=False)
     enabled = models.BooleanField(default=False)
+    api_format = models.CharField(max_length=16, choices=API_FORMATS, default='openai')
     base_url = models.CharField(max_length=500)
     model = models.CharField(max_length=100, blank=True)
     key_id = models.CharField(max_length=50, default='primary')

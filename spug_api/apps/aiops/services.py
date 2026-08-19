@@ -19,7 +19,10 @@ from .models import AIActionPlan
 
 
 PROMPT_VERSION = 'readonly-v1'
-PROVIDER = 'openai-compatible'
+PROVIDERS = {
+    'openai': 'openai-compatible',
+    'anthropic': 'anthropic',
+}
 RISK_LEVELS = {'low', 'medium', 'high', 'critical'}
 CONFIDENCE_LEVELS = {'low', 'medium', 'high'}
 FORBIDDEN_OUTPUT_KEYS = {
@@ -31,6 +34,13 @@ FORBIDDEN_OUTPUT_KEYS = {
 
 class AIOpsError(Exception):
     pass
+
+
+def provider_name(api_format):
+    try:
+        return PROVIDERS[api_format]
+    except KeyError:
+        raise AIOpsError('不支持的模型 API 格式')
 
 
 def _safe_text(value, maximum, field, required=False):
@@ -485,24 +495,76 @@ def _read_provider_response(response, maximum):
     return data
 
 
+def _provider_request(config, question, evidence):
+    api_format = config.get('api_format', 'openai')
+    messages = _messages(question, evidence)
+    headers = {'Content-Type': 'application/json'}
+    if api_format == 'openai':
+        url = config['base_url'].rstrip('/') + '/chat/completions'
+        headers['Authorization'] = 'Bearer ' + config['api_key']
+        payload = {
+            'model': config['model'],
+            'messages': messages,
+            'temperature': 0.1,
+            'max_tokens': config['max_output_tokens'],
+        }
+        if config['json_mode']:
+            payload['response_format'] = {'type': 'json_object'}
+        return url, headers, payload
+    if api_format == 'anthropic':
+        url = config['base_url'].rstrip('/') + '/messages'
+        headers.update({
+            'x-api-key': config['api_key'],
+            'anthropic-version': '2023-06-01',
+        })
+        return url, headers, {
+            'model': config['model'],
+            'system': messages[0]['content'],
+            'messages': messages[1:],
+            'temperature': 0.1,
+            'max_tokens': config['max_output_tokens'],
+        }
+    raise AIOpsError('不支持的模型 API 格式')
+
+
+def _provider_content_and_usage(data, api_format):
+    if api_format == 'openai':
+        try:
+            content = data['choices'][0]['message']['content']
+        except (TypeError, KeyError, IndexError):
+            raise AIOpsError('大模型服务未返回诊断内容')
+        input_tokens_key = 'prompt_tokens'
+        output_tokens_key = 'completion_tokens'
+    elif api_format == 'anthropic':
+        blocks = data.get('content')
+        if not isinstance(blocks, list) or not blocks:
+            raise AIOpsError('大模型服务未返回诊断内容')
+        if any(
+                not isinstance(block, dict)
+                or block.get('type') != 'text'
+                or not isinstance(block.get('text'), str)
+                for block in blocks):
+            raise AIOpsError('Anthropic 服务返回了不支持的非文本内容块')
+        content = ''.join(block.get('text', '') for block in blocks)
+        input_tokens_key = 'input_tokens'
+        output_tokens_key = 'output_tokens'
+    else:
+        raise AIOpsError('不支持的模型 API 格式')
+    usage = data.get('usage')
+    return content, usage if isinstance(usage, dict) else {}, (
+        input_tokens_key, output_tokens_key
+    )
+
+
 def call_provider(question, evidence, config=None):
     config = config or get_runtime_config(include_secret=True)
     if 'api_key' not in config:
         raise AIOpsError('模型运行配置缺少 API Key 状态')
     if not config['enabled']:
         raise AIOpsError('AI 运维功能尚未启用')
-    url = config['base_url'].rstrip('/') + '/chat/completions'
-    headers = {'Content-Type': 'application/json'}
-    if config['api_key']:
-        headers['Authorization'] = 'Bearer ' + config['api_key']
-    payload = {
-        'model': config['model'],
-        'messages': _messages(question, evidence),
-        'temperature': 0.1,
-        'max_tokens': config['max_output_tokens'],
-    }
-    if config['json_mode']:
-        payload['response_format'] = {'type': 'json_object'}
+    if not config['api_key']:
+        raise AIOpsError('模型运行配置缺少 API Key')
+    url, headers, payload = _provider_request(config, question, evidence)
     response = None
     try:
         response = requests.post(
@@ -518,10 +580,8 @@ def call_provider(question, evidence, config=None):
     finally:
         if response is not None:
             response.close()
-    try:
-        content = data['choices'][0]['message']['content']
-    except (TypeError, KeyError, IndexError):
-        raise AIOpsError('大模型服务未返回诊断内容')
+    api_format = config.get('api_format', 'openai')
+    content, usage, usage_keys = _provider_content_and_usage(data, api_format)
     if not isinstance(content, str) or len(content.encode('utf-8')) > config['max_response_bytes']:
         raise AIOpsError('大模型返回内容为空或超过安全限制')
     content = content.strip()
@@ -535,9 +595,7 @@ def call_provider(question, evidence, config=None):
     result = validate_model_output(
         raw, [item['citation'] for item in evidence]
     )
-    usage = data.get('usage') if isinstance(data, dict) else {}
-    if not isinstance(usage, dict):
-        usage = {}
+
     def token_count(value):
         try:
             value = int(value)
@@ -546,8 +604,8 @@ def call_provider(question, evidence, config=None):
         return value if 0 <= value <= 1000000000 else None
 
     return result, {
-        'input_tokens': token_count(usage.get('prompt_tokens')),
-        'output_tokens': token_count(usage.get('completion_tokens')),
+        'input_tokens': token_count(usage.get(usage_keys[0])),
+        'output_tokens': token_count(usage.get(usage_keys[1])),
     }
 
 

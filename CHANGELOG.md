@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.0-alpha.13 - 2026-08-19
+
+- AI 模型页面新增 API 格式选择，支持 OpenAI Chat Completions 与 Anthropic Messages 原生协议并即时切换。
+- OpenAI 格式使用 `/chat/completions`、Bearer Token 和可选 JSON Object 模式；Anthropic 格式使用 `/messages`、`x-api-key`、固定 API 版本头和顶层系统提示。
+- 新增 Anthropic 文本内容块及 `input_tokens`/`output_tokens` 解析；拒绝模型返回的工具或其他非文本内容块，既有只读证据与引用校验边界保持不变。
+- 环境回退新增 `SPUG_AIOPS_API_FORMAT=openai|anthropic`，已有页面配置迁移后默认保持 OpenAI 格式。
+
 ## 0.1.0-alpha.12 - 2026-08-19
 
 - AI 运维页面新增模型配置弹窗，可即时管理启用状态、OpenAI-compatible 地址、模型、JSON mode、超时、证据上限、输出上限、响应字节上限和调用频率，无需重启容器。

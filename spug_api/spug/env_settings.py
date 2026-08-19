@@ -198,6 +198,11 @@ def load_security_settings(*, default_secret, default_debug, default_allowed_hos
     aiops_enabled = env_bool(
         'SPUG_AIOPS_ENABLED', default=False, environ=environ
     )
+    aiops_api_format = environ.get(
+        'SPUG_AIOPS_API_FORMAT', 'openai'
+    ).strip().lower()
+    if aiops_api_format not in {'openai', 'anthropic'}:
+        raise ValueError('SPUG_AIOPS_API_FORMAT must be openai or anthropic')
     aiops_model = validate_model_name(
         environ.get('SPUG_AIOPS_MODEL', ''), required=aiops_enabled
     )
@@ -296,6 +301,7 @@ def load_security_settings(*, default_secret, default_debug, default_allowed_hos
         'remote_gateway_enabled': remote_gateway_enabled,
         'observability_enabled': observability_enabled,
         'aiops_enabled': aiops_enabled,
+        'aiops_api_format': aiops_api_format,
         'aiops_api_key': provided_aiops_key,
         'aiops_base_url': aiops_base_url,
         'aiops_model': aiops_model,

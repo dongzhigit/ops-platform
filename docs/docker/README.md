@@ -38,16 +38,16 @@ docker exec spug init_spug admin '请替换为高强度密码'
 
 ## 启用只读 AI 调查
 
-AI 默认关闭。初始化管理员后，推荐进入“知识与 AI → AI 运维 → 模型配置”，通过受 `aiops.config.manage` 保护的页面保存模型地址、模型名称、限制参数和 API Key。API Key 使用凭据主密钥加密后落库，页面和 API 均不会回显明文；配置保存后即时生效，无需重启容器。
+AI 默认关闭。初始化管理员后，推荐进入“知识与 AI → AI 运维 → 模型配置”，选择 OpenAI Chat Completions 或 Anthropic Messages 格式，并保存模型地址、模型名称、限制参数和 API Key。API Key 使用凭据主密钥加密后落库，页面和 API 均不会回显明文；配置保存后即时生效，无需重启容器。
 
-环境变量仍可作为首次启动或灾难恢复的回退配置。选择可信的 OpenAI-compatible Chat Completions 服务后，将 `.env` 中的 `SPUG_AIOPS_ENABLED` 改为 `true`，填写 `SPUG_AIOPS_BASE_URL` 和 `SPUG_AIOPS_MODEL`，再创建独立密钥文件：
+环境变量仍可作为首次启动或灾难恢复的回退配置。选择可信的模型服务后，将 `.env` 中的 `SPUG_AIOPS_ENABLED` 改为 `true`，设置 `SPUG_AIOPS_API_FORMAT=openai` 或 `anthropic`，填写 `SPUG_AIOPS_BASE_URL` 和 `SPUG_AIOPS_MODEL`，再创建独立密钥文件：
 
 ```bash
 printf '%s' '替换为独立的模型服务密钥' > secrets/aiops_api_key
 chmod 400 secrets/aiops_api_key
 ```
 
-同时设置 `SPUG_AIOPS_API_KEY_FILE=/run/spug-secrets/aiops_api_key`。生产模式下，无论页面还是环境配置都要求模型地址使用 HTTPS。若兼容服务不支持 `response_format=json_object`，可关闭页面中的 JSON Object 模式或设置 `SPUG_AIOPS_JSON_MODE=false`；后端仍会严格解析和校验 JSON，并按响应字节上限流式限制响应体。不要把模型密钥写入镜像、Git 或浏览器持久存储。
+同时设置 `SPUG_AIOPS_API_KEY_FILE=/run/spug-secrets/aiops_api_key`。根地址应包含 `/v1`，系统会按所选格式追加 `/chat/completions` 或 `/messages`。生产模式下，无论页面还是环境配置都要求模型地址使用 HTTPS。若 OpenAI 兼容服务不支持 `response_format=json_object`，可关闭页面中的 JSON Object 模式或设置 `SPUG_AIOPS_JSON_MODE=false`；Anthropic 格式会忽略该设置。后端始终严格解析和校验 JSON，并按响应字节上限流式限制响应体。不要把模型密钥写入镜像、Git 或浏览器持久存储。
 
 调查时会把当前用户有权访问的主机基础信息、指标、告警摘要和已发布知识片段发送给所配置的模型服务。使用外部供应商前必须确认数据分类、跨境、保留与审计要求；敏感环境优先使用受控内网模型服务。当前模型没有执行工具，不能运行 Shell、SSH、发布或配置变更。
 

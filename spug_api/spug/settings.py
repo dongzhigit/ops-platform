@@ -147,7 +147,7 @@ AUTHENTICATION_EXCLUDES = (
 )
 
 SPUG_VERSION = 'v3.4.0'
-OPS_PLATFORM_VERSION = os.environ.get('OPS_PLATFORM_VERSION', '0.1.0-alpha.12')
+OPS_PLATFORM_VERSION = os.environ.get('OPS_PLATFORM_VERSION', '0.1.0-alpha.13')
 
 # override default config
 try:
@@ -173,6 +173,7 @@ SPUG_AUDIT_SIGNING_KEY = _security['audit_signing_key']
 SPUG_REMOTE_GATEWAY_ENABLED = _security['remote_gateway_enabled']
 SPUG_OBSERVABILITY_ENABLED = _security['observability_enabled']
 SPUG_AIOPS_ENABLED = _security['aiops_enabled']
+SPUG_AIOPS_API_FORMAT = _security['aiops_api_format']
 SPUG_AIOPS_API_KEY = _security['aiops_api_key']
 SPUG_AIOPS_BASE_URL = _security['aiops_base_url']
 SPUG_AIOPS_MODEL = _security['aiops_model']

@@ -15,7 +15,7 @@ class AIConfigError(ValueError):
 
 
 FIELDS = (
-    'enabled', 'base_url', 'model', 'json_mode', 'request_timeout',
+    'enabled', 'api_format', 'base_url', 'model', 'json_mode', 'request_timeout',
     'max_hosts', 'knowledge_limit', 'max_output_tokens',
     'max_response_bytes', 'rate_limit_per_minute',
 )
@@ -24,6 +24,7 @@ FIELDS = (
 def _environment_config():
     return {
         'enabled': settings.SPUG_AIOPS_ENABLED,
+        'api_format': settings.SPUG_AIOPS_API_FORMAT,
         'base_url': settings.SPUG_AIOPS_BASE_URL,
         'model': settings.SPUG_AIOPS_MODEL,
         'json_mode': settings.SPUG_AIOPS_JSON_MODE,
@@ -86,6 +87,9 @@ def _validate_independent_key(value):
 
 
 def save_runtime_config(*, actor, values):
+    api_format = str(values['api_format']).strip().lower()
+    if api_format not in dict(AIProviderConfig.API_FORMATS):
+        raise AIConfigError('模型 API 格式必须是 OpenAI 或 Anthropic')
     try:
         base_url = validate_service_url(values['base_url'], name='模型服务地址')
         model = validate_model_name(values['model'], name='模型名称', required=values['enabled'])
@@ -100,6 +104,7 @@ def save_runtime_config(*, actor, values):
             pk=1,
             defaults={
                 'enabled': defaults['enabled'],
+                'api_format': defaults['api_format'],
                 'base_url': defaults['base_url'],
                 'model': defaults['model'],
                 'json_mode': defaults['json_mode'],
@@ -114,9 +119,10 @@ def save_runtime_config(*, actor, values):
         )
         provider = AIProviderConfig.objects.select_for_update().get(pk=provider.pk)
         for field in FIELDS:
-            if field in ('base_url', 'model'):
+            if field in ('api_format', 'base_url', 'model'):
                 continue
             setattr(provider, field, values[field])
+        provider.api_format = api_format
         provider.base_url = base_url
         provider.model = model
 

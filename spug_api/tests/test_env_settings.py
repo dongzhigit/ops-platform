@@ -334,5 +334,25 @@ class EnvSettingsTest(TestCase):
             environ=dict(common, SPUG_AIOPS_API_KEY='independent-ai-provider-key'),
         )
         self.assertTrue(result['aiops_enabled'])
+        self.assertEqual(result['aiops_api_format'], 'openai')
         self.assertEqual(result['aiops_model'], 'ops-model-v1')
         self.assertEqual(result['aiops_api_key'], 'independent-ai-provider-key')
+
+        anthropic = load_security_settings(
+            default_secret='development-secret',
+            default_debug=True,
+            default_allowed_hosts=['127.0.0.1'],
+            environ=dict(
+                common,
+                SPUG_AIOPS_API_FORMAT='anthropic',
+                SPUG_AIOPS_API_KEY='independent-ai-provider-key',
+            ),
+        )
+        self.assertEqual(anthropic['aiops_api_format'], 'anthropic')
+        with self.assertRaisesRegex(ValueError, 'openai or anthropic'):
+            load_security_settings(
+                default_secret='development-secret',
+                default_debug=True,
+                default_allowed_hosts=['127.0.0.1'],
+                environ=dict(common, SPUG_AIOPS_API_FORMAT='unsupported'),
+            )

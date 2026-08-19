@@ -1,4 +1,6 @@
-FROM node:22-bookworm-slim AS web-builder
+# The web bundle is architecture-independent. Build it on the native builder
+# platform instead of emulating the legacy linux/amd64 runtime on ARM hosts.
+FROM --platform=$BUILDPLATFORM node:22-bookworm-slim AS web-builder
 
 WORKDIR /build/spug_web
 RUN corepack enable
@@ -59,7 +61,7 @@ COPY docs/docker/spug.ini /etc/supervisord.d/
 COPY docs/docker/redis.conf /etc/
 COPY docs/docker/entrypoint.sh /
 
-ARG OPS_PLATFORM_VERSION=0.1.0-alpha.12
+ARG OPS_PLATFORM_VERSION=0.1.0-alpha.13
 LABEL org.opencontainers.image.title="Spug Ops Platform" \
       org.opencontainers.image.version="${OPS_PLATFORM_VERSION}"
 ENV OPS_PLATFORM_VERSION=${OPS_PLATFORM_VERSION}

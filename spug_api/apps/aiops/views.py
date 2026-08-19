@@ -15,14 +15,14 @@ from .config import (
     get_runtime_config,
     save_runtime_config,
 )
-from .models import AIInvestigation
+from .models import AIInvestigation, AIProviderConfig
 from .services import (
     AIOpsError,
     PROMPT_VERSION,
-    PROVIDER,
     available_scope,
     collect_evidence,
     execute_investigation,
+    provider_name,
 )
 
 
@@ -58,7 +58,7 @@ class AIConfigView(View):
     def get(self, request):
         config = get_runtime_config()
         config.update({
-            'provider': PROVIDER,
+            'provider': provider_name(config['api_format']),
             'prompt_version': PROMPT_VERSION,
             'read_only': True,
             'execution_enabled': False,
@@ -70,6 +70,11 @@ class AIConfigView(View):
     def post(self, request):
         form, error = JsonParser(
             Argument('enabled', type=bool),
+            Argument(
+                'api_format',
+                filter=lambda x: x in dict(AIProviderConfig.API_FORMATS),
+                help='模型 API 格式必须是 OpenAI 或 Anthropic',
+            ),
             Argument(
                 'base_url', handler=str.strip,
                 filter=lambda x: 1 <= len(x) <= 500,
@@ -112,6 +117,7 @@ class AIConfigView(View):
             result='succeeded',
             details={
                 'enabled': config['enabled'],
+                'api_format': config['api_format'],
                 'base_url': config['base_url'],
                 'model': config['model'],
                 'json_mode': config['json_mode'],
@@ -121,7 +127,7 @@ class AIConfigView(View):
             request=request,
         )
         config.update({
-            'provider': PROVIDER,
+            'provider': provider_name(config['api_format']),
             'prompt_version': PROMPT_VERSION,
             'read_only': True,
             'execution_enabled': False,
@@ -238,7 +244,7 @@ class AIInvestigationView(View):
                 requested_host_ids=json.dumps(host_ids),
                 alert_id=form.alert_id,
                 status='running',
-                provider=PROVIDER,
+                provider=provider_name(config['api_format']),
                 model=config['model'],
                 prompt_version=PROMPT_VERSION,
             )
@@ -252,6 +258,7 @@ class AIInvestigationView(View):
                 details={
                     'host_count': len(host_ids),
                     'alert_id': form.alert_id,
+                    'api_format': config['api_format'],
                     'model': config['model'],
                     'prompt_version': PROMPT_VERSION,
                     'read_only': True,

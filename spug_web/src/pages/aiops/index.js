@@ -22,11 +22,15 @@ const CONFIDENCE_LABELS = {low: '低', medium: '中', high: '高'};
 function ModelConfigModal({visible, config, onCancel, onSuccess}) {
   const [form] = Form.useForm();
   const [saving, setSaving] = useState(false);
+  const [apiFormat, setApiFormat] = useState('openai');
 
   useEffect(() => {
     if (!visible) return;
+    const nextApiFormat = config.api_format || 'openai';
+    setApiFormat(nextApiFormat);
     form.setFieldsValue({
       enabled: config.enabled,
+      api_format: nextApiFormat,
       base_url: config.base_url,
       model: config.model,
       api_key: '',
@@ -74,17 +78,34 @@ function ModelConfigModal({visible, config, onCancel, onSuccess}) {
         <Form.Item name="enabled" label="启用只读 AI 调查" valuePropName="checked">
           <Switch checkedChildren="启用" unCheckedChildren="关闭"/>
         </Form.Item>
-        <Form.Item
-          name="base_url"
-          label="OpenAI-compatible API 地址"
-          extra="填写包含 /v1 的根地址；生产模式必须使用 HTTPS。"
-          rules={[
-            {required: true, message: '请输入模型服务地址'},
-            {max: 500, message: '地址不能超过 500 个字符'},
-            {type: 'url', message: '请输入完整的 HTTP(S) URL'},
-          ]}>
-          <Input placeholder="https://model.example.com/v1"/>
-        </Form.Item>
+        <Row gutter={16}>
+          <Col span={8}>
+            <Form.Item
+              name="api_format"
+              label="API 格式"
+              rules={[{required: true, message: '请选择 API 格式'}]}>
+              <Select onChange={setApiFormat}>
+                <Select.Option value="openai">OpenAI Chat Completions</Select.Option>
+                <Select.Option value="anthropic">Anthropic Messages</Select.Option>
+              </Select>
+            </Form.Item>
+          </Col>
+          <Col span={16}>
+            <Form.Item
+              name="base_url"
+              label="API 根地址"
+              extra={`填写包含 /v1 的根地址，系统将自动追加 ${apiFormat === 'anthropic' ? '/messages' : '/chat/completions'}；生产模式必须使用 HTTPS。`}
+              rules={[
+                {required: true, message: '请输入模型服务地址'},
+                {max: 500, message: '地址不能超过 500 个字符'},
+                {type: 'url', message: '请输入完整的 HTTP(S) URL'},
+              ]}>
+              <Input placeholder={apiFormat === 'anthropic'
+                ? 'https://api.anthropic.com/v1'
+                : 'https://api.openai.com/v1'}/>
+            </Form.Item>
+          </Col>
+        </Row>
         <Row gutter={16}>
           <Col span={12}>
             <Form.Item name="model" label="模型名称" rules={[{max: 100}]}>
@@ -139,8 +160,12 @@ function ModelConfigModal({visible, config, onCancel, onSuccess}) {
             </Form.Item>
           </Col>
         </Row>
-        <Form.Item name="json_mode" label="请求 JSON Object 模式" valuePropName="checked">
-          <Switch checkedChildren="启用" unCheckedChildren="兼容模式"/>
+        <Form.Item
+          name="json_mode"
+          label="请求 JSON Object 模式（仅 OpenAI）"
+          extra={apiFormat === 'anthropic' ? 'Anthropic Messages 没有该参数，系统仍会通过提示词和后端校验强制要求 JSON。' : null}
+          valuePropName="checked">
+          <Switch disabled={apiFormat === 'anthropic'} checkedChildren="启用" unCheckedChildren="兼容模式"/>
         </Form.Item>
       </Form>
     </Modal>

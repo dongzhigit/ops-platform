@@ -1,6 +1,6 @@
 # M5 知识库与只读 AI 运维
 
-版本：`0.1.0-alpha.12`
+版本：`0.1.0-alpha.13`
 
 ## 已实现范围
 
@@ -11,7 +11,7 @@
 AI 运维第一阶段只支持同步的只读调查：
 
 - 收集当前用户有权访问的主机基础信息、Prometheus 指标、Alertmanager 告警和已发布知识片段。
-- 调用管理员配置的 OpenAI-compatible Chat Completions 服务。
+- 调用管理员配置的 OpenAI Chat Completions 或 Anthropic Messages 服务。
 - 输出区分事实、推断、未知、建议和人工行动方案。
 - 事实必须引用本次授权证据，伪造或越权引用会导致整次调查失败。
 - 结果、模型、提示版本、证据快照、token 用量和关联 ID 持久化并审计。
@@ -52,12 +52,15 @@ AI 运维第一阶段只支持同步的只读调查：
 
 ## 模型配置
 
-AI 默认关闭。具有 `aiops.config.manage` 权限的管理员可以在“知识与 AI → AI 运维 → 模型配置”中保存并即时启用，无需重启容器。API Key 使用资产凭据主密钥执行 AES-GCM 信封加密，数据库只保存密文；密钥更新进入 HMAC 审计链，主密钥轮换命令也会同时轮换 AI 模型密钥。
+AI 默认关闭。具有 `aiops.config.manage` 权限的管理员可以在“知识与 AI → AI 运维 → 模型配置”中选择 OpenAI Chat Completions 或 Anthropic Messages 格式并即时启用，无需重启容器。API Key 使用资产凭据主密钥执行 AES-GCM 信封加密，数据库只保存密文；密钥更新进入 HMAC 审计链，主密钥轮换命令也会同时轮换 AI 模型密钥。
+
+OpenAI 格式会在根地址后请求 `/chat/completions`，使用 `Authorization: Bearer`，并可开启 `response_format=json_object`。Anthropic 格式会请求 `/messages`，使用 `x-api-key` 和 `anthropic-version: 2023-06-01`；该协议没有 JSON Object 参数，但仍通过系统提示与后端严格解析要求单个 JSON 对象。两种格式都不发送 `tools` 或 `functions`。
 
 页面配置运行时优先级高于环境配置。以下环境变量继续作为首次启动和灾难恢复的回退方式：
 
 - `SPUG_AIOPS_ENABLED=true`
-- `SPUG_AIOPS_BASE_URL`：包含 `/v1` 的 OpenAI-compatible 根地址；生产启用时必须使用 HTTPS。
+- `SPUG_AIOPS_API_FORMAT=openai`：可选 `openai` 或 `anthropic`。
+- `SPUG_AIOPS_BASE_URL`：包含 `/v1` 的 API 根地址；生产启用时必须使用 HTTPS。
 - `SPUG_AIOPS_MODEL`：模型标识。
 - `SPUG_AIOPS_API_KEY_FILE`：容器内只读密钥文件路径；页面未保存密钥时作为回退。
 
