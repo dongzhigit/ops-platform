@@ -1,13 +1,17 @@
+import base64
 import json
+from io import StringIO
 from unittest.mock import Mock, patch
 
+from django.core.management import call_command
 from django.test import RequestFactory, TestCase, override_settings
 from django.urls import resolve
 
 from apps.account.models import Role, User
 from apps.assets.models import AccessGrant
 from apps.audit.models import AuditEvent
-from apps.aiops.models import AIActionPlan, AIInvestigation
+from apps.aiops.config import get_runtime_config
+from apps.aiops.models import AIActionPlan, AIInvestigation, AIProviderConfig
 from apps.aiops.services import (
     AIOpsError,
     call_provider,
@@ -168,6 +172,24 @@ class AIOpsTest(TestCase):
             },
         }
 
+    def config_payload(self, **overrides):
+        payload = {
+            'enabled': True,
+            'base_url': 'https://configured-model.example.com/v1',
+            'model': 'configured-ops-model',
+            'api_key': 'provider-secret-never-returned',
+            'clear_api_key': False,
+            'json_mode': True,
+            'request_timeout': 20,
+            'max_hosts': 10,
+            'knowledge_limit': 6,
+            'max_output_tokens': 1024,
+            'max_response_bytes': 524288,
+            'rate_limit_per_minute': 3,
+        }
+        payload.update(overrides)
+        return payload
+
     def test_routes_and_config_never_expose_api_key(self):
         self.assertIs(resolve('/v1/aiops/config/').func.view_class, AIConfigView)
         self.assertIs(resolve('/v1/aiops/scope/').func.view_class, AIScopeView)
@@ -186,6 +208,97 @@ class AIOpsTest(TestCase):
         self.assertTrue(body(response)['data']['read_only'])
         self.assertFalse(body(response)['data']['execution_enabled'])
         self.assertEqual(response['Cache-Control'], 'no-store, max-age=0')
+
+    @override_settings(SPUG_ENV='production')
+    def test_page_config_encrypts_key_enforces_permission_and_updates_runtime(self):
+        denied = self.request(
+            'post', '/v1/aiops/config/', self.user, self.config_payload()
+        )
+        self.assertIn('权限', body(AIConfigView.as_view()(denied))['error'])
+
+        insecure = self.request(
+            'post', '/v1/aiops/config/', self.admin,
+            self.config_payload(base_url='http://configured-model.example.com/v1'),
+        )
+        self.assertIn('HTTPS', body(AIConfigView.as_view()(insecure))['error'])
+
+        request = self.request(
+            'post', '/v1/aiops/config/', self.admin, self.config_payload()
+        )
+        response = AIConfigView.as_view()(request)
+        data = body(response)['data']
+        serialized = response.content.decode('utf-8')
+        self.assertTrue(data['enabled'])
+        self.assertEqual(data['source'], 'database')
+        self.assertEqual(data['api_key_source'], 'database')
+        self.assertTrue(data['api_key_configured'])
+        self.assertNotIn('provider-secret-never-returned', serialized)
+        self.assertNotIn('api_key_data', serialized)
+
+        provider = AIProviderConfig.objects.get(pk=1)
+        self.assertNotIn('provider-secret-never-returned', provider.api_key_data)
+        self.assertEqual(provider.reveal_api_key(), 'provider-secret-never-returned')
+        runtime = get_runtime_config(include_secret=True)
+        self.assertEqual(runtime['base_url'], 'https://configured-model.example.com/v1')
+        self.assertEqual(runtime['model'], 'configured-ops-model')
+        self.assertEqual(runtime['api_key'], 'provider-secret-never-returned')
+        self.assertEqual(runtime['rate_limit_per_minute'], 3)
+        self.assertEqual(
+            AuditEvent.objects.filter(action='aiops.config.write').count(), 1
+        )
+
+        clear_request = self.request(
+            'post', '/v1/aiops/config/', self.admin,
+            self.config_payload(
+                enabled=False, api_key='', clear_api_key=True,
+            ),
+        )
+        clear_data = body(AIConfigView.as_view()(clear_request))['data']
+        self.assertFalse(clear_data['enabled'])
+        self.assertEqual(clear_data['api_key_source'], 'environment')
+        provider.refresh_from_db()
+        self.assertFalse(provider.has_api_key)
+
+    @override_settings(SPUG_ENV='production', SPUG_AIOPS_API_KEY='')
+    def test_page_config_can_be_saved_disabled_before_model_key_is_available(self):
+        request = self.request(
+            'post', '/v1/aiops/config/', self.admin,
+            self.config_payload(enabled=False, model='', api_key=''),
+        )
+        response = AIConfigView.as_view()(request)
+        data = body(response)['data']
+        self.assertFalse(body(response)['error'])
+        self.assertFalse(data['enabled'])
+        self.assertEqual(data['model'], '')
+        self.assertFalse(data['api_key_configured'])
+
+    def test_page_config_api_key_participates_in_master_key_rotation(self):
+        primary = base64.b64encode(b'p' * 32).decode('ascii')
+        next_key = base64.b64encode(b'n' * 32).decode('ascii')
+        with self.settings(
+            SPUG_ENV='production',
+            SPUG_CREDENTIAL_MASTER_KEY=primary,
+            SPUG_CREDENTIAL_MASTER_KEYS={'primary': primary, 'next': next_key},
+            SPUG_CREDENTIAL_PRIMARY_KEY_ID='primary',
+        ):
+            request = self.request(
+                'post', '/v1/aiops/config/', self.admin, self.config_payload()
+            )
+            self.assertFalse(body(AIConfigView.as_view()(request))['error'])
+            provider = AIProviderConfig.objects.get(pk=1)
+            self.assertEqual(provider.key_id, 'primary')
+
+            output = StringIO()
+            call_command(
+                'rotate_credential_master_key',
+                target_key_id='next',
+                execute=True,
+                stdout=output,
+            )
+            provider.refresh_from_db()
+            self.assertEqual(provider.key_id, 'next')
+            self.assertEqual(provider.reveal_api_key(), 'provider-secret-never-returned')
+            self.assertIn('1 条 AI 模型密钥', output.getvalue())
 
     @patch('apps.aiops.services.query_summary')
     def test_evidence_is_authorized_and_contains_citable_sources(self, query_summary):
@@ -268,7 +381,7 @@ class AIOpsTest(TestCase):
     def test_investigation_persists_result_plan_and_audit(self, provider, query_summary):
         query_summary.return_value = {str(self.host.id): {'cpu': 92.5}}
 
-        def provider_result(question, evidence):
+        def provider_result(question, evidence, config=None):
             return self.valid_result(evidence[0]['citation']), {
                 'input_tokens': 120, 'output_tokens': 80,
             }

@@ -1,9 +1,12 @@
 import React, { useEffect, useState } from 'react';
 import {
-  Alert, Button, Card, Collapse, Descriptions, Divider, Drawer, Empty, Form,
-  Input, List, Modal, Select, Space, Table, Tag, Timeline, Typography, message,
+  Alert, Button, Card, Checkbox, Col, Collapse, Descriptions, Divider, Drawer,
+  Empty, Form, Input, InputNumber, List, Modal, Row, Select, Space, Switch,
+  Table, Tag, Timeline, Typography, message,
 } from 'antd';
-import { EyeOutlined, RobotOutlined, SearchOutlined } from '@ant-design/icons';
+import {
+  EyeOutlined, RobotOutlined, SearchOutlined, SettingOutlined,
+} from '@ant-design/icons';
 
 import { AuthDiv, Breadcrumb } from 'components';
 import { hasPermission, http } from 'libs';
@@ -14,6 +17,135 @@ const STATUS_COLORS = {running: 'processing', completed: 'green', failed: 'red'}
 const RISK_LABELS = {low: '低风险', medium: '中风险', high: '高风险', critical: '严重风险'};
 const RISK_COLORS = {low: 'green', medium: 'blue', high: 'orange', critical: 'red'};
 const CONFIDENCE_LABELS = {low: '低', medium: '中', high: '高'};
+
+
+function ModelConfigModal({visible, config, onCancel, onSuccess}) {
+  const [form] = Form.useForm();
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (!visible) return;
+    form.setFieldsValue({
+      enabled: config.enabled,
+      base_url: config.base_url,
+      model: config.model,
+      api_key: '',
+      clear_api_key: false,
+      json_mode: config.json_mode,
+      request_timeout: config.request_timeout,
+      max_hosts: config.max_hosts,
+      knowledge_limit: config.knowledge_limit,
+      max_output_tokens: config.max_output_tokens,
+      max_response_bytes: config.max_response_bytes,
+      rate_limit_per_minute: config.rate_limit_per_minute,
+    });
+  }, [visible, config, form]);
+
+  function submit() {
+    form.validateFields().then(values => {
+      if (values.enabled && !config.api_key_configured && !values.api_key) {
+        message.error('启用 AI 运维前必须填写 API Key');
+        return;
+      }
+      setSaving(true);
+      http.post('/api/v1/aiops/config/', values).then(data => {
+        message.success('模型配置已加密保存并立即生效');
+        onSuccess(data);
+      }).finally(() => setSaving(false));
+    });
+  }
+
+  return (
+    <Modal
+      visible={visible}
+      width={820}
+      title="AI 模型配置"
+      confirmLoading={saving}
+      onOk={submit}
+      onCancel={onCancel}
+      destroyOnClose>
+      <Alert
+        showIcon
+        type="warning"
+        message="API Key 只会提交一次并以 AES-GCM 密文保存，页面和查询接口不会返回明文。"
+        description={`当前密钥：${config.api_key_configured ? '已配置' : '未配置'}；来源：${config.api_key_source === 'database' ? '页面加密配置' : config.api_key_source === 'environment' ? '环境密钥文件' : '无'}`}
+        style={{marginBottom: 16}}/>
+      <Form form={form} layout="vertical" preserve={false}>
+        <Form.Item name="enabled" label="启用只读 AI 调查" valuePropName="checked">
+          <Switch checkedChildren="启用" unCheckedChildren="关闭"/>
+        </Form.Item>
+        <Form.Item
+          name="base_url"
+          label="OpenAI-compatible API 地址"
+          extra="填写包含 /v1 的根地址；生产模式必须使用 HTTPS。"
+          rules={[
+            {required: true, message: '请输入模型服务地址'},
+            {max: 500, message: '地址不能超过 500 个字符'},
+            {type: 'url', message: '请输入完整的 HTTP(S) URL'},
+          ]}>
+          <Input placeholder="https://model.example.com/v1"/>
+        </Form.Item>
+        <Row gutter={16}>
+          <Col span={12}>
+            <Form.Item name="model" label="模型名称" rules={[{max: 100}]}>
+              <Input placeholder="例如 ops-model-v1"/>
+            </Form.Item>
+          </Col>
+          <Col span={12}>
+            <Form.Item
+              name="api_key"
+              label="API Key"
+              extra={config.api_key_configured ? '留空表示保留现有密钥。' : '启用前必须填写。'}>
+              <Input.Password autoComplete="new-password" maxLength={8192}
+                              placeholder={config.api_key_configured ? '已配置，留空不修改' : '请输入 API Key'}/>
+            </Form.Item>
+          </Col>
+        </Row>
+        {config.api_key_configured && config.api_key_source === 'database' && (
+          <Form.Item name="clear_api_key" valuePropName="checked">
+            <Checkbox>清除页面保存的 API Key（启用状态下不能清除唯一可用密钥）</Checkbox>
+          </Form.Item>
+        )}
+        <Divider orientation="left">调用与配额限制</Divider>
+        <Row gutter={16}>
+          <Col span={8}>
+            <Form.Item name="request_timeout" label="请求超时（秒）" rules={[{required: true}]}>
+              <InputNumber min={1} max={120} style={{width: '100%'}}/>
+            </Form.Item>
+          </Col>
+          <Col span={8}>
+            <Form.Item name="max_hosts" label="单次主机上限" rules={[{required: true}]}>
+              <InputNumber min={1} max={100} style={{width: '100%'}}/>
+            </Form.Item>
+          </Col>
+          <Col span={8}>
+            <Form.Item name="knowledge_limit" label="知识片段上限" rules={[{required: true}]}>
+              <InputNumber min={1} max={20} style={{width: '100%'}}/>
+            </Form.Item>
+          </Col>
+          <Col span={8}>
+            <Form.Item name="max_output_tokens" label="最大输出 Token" rules={[{required: true}]}>
+              <InputNumber min={256} max={8192} style={{width: '100%'}}/>
+            </Form.Item>
+          </Col>
+          <Col span={8}>
+            <Form.Item name="max_response_bytes" label="响应字节上限" rules={[{required: true}]}>
+              <InputNumber min={4096} max={4194304} style={{width: '100%'}}/>
+            </Form.Item>
+          </Col>
+          <Col span={8}>
+            <Form.Item name="rate_limit_per_minute" label="每分钟调用上限" rules={[{required: true}]}>
+              <InputNumber min={1} max={60} style={{width: '100%'}}/>
+            </Form.Item>
+          </Col>
+        </Row>
+        <Form.Item name="json_mode" label="请求 JSON Object 模式" valuePropName="checked">
+          <Switch checkedChildren="启用" unCheckedChildren="兼容模式"/>
+        </Form.Item>
+      </Form>
+    </Modal>
+  );
+}
 
 
 function CitationTags({values}) {
@@ -142,6 +274,13 @@ export default function AIOpsIndex() {
   const [loading, setLoading] = useState(false);
   const [running, setRunning] = useState(false);
   const [detail, setDetail] = useState(null);
+  const [configVisible, setConfigVisible] = useState(false);
+  const canViewInvestigations = hasPermission('aiops.investigation.view');
+  const canManageConfig = hasPermission('aiops.config.manage');
+
+  function reloadConfig() {
+    return http.get('/api/v1/aiops/config/').then(setConfig);
+  }
 
   function reloadRecords() {
     setLoading(true);
@@ -151,11 +290,12 @@ export default function AIOpsIndex() {
   }
 
   useEffect(() => {
-    Promise.all([
-      http.get('/api/v1/aiops/config/').then(setConfig),
-      http.get('/api/v1/aiops/scope/').then(setScope),
-      reloadRecords(),
-    ]);
+    const requests = [reloadConfig()];
+    if (canViewInvestigations) {
+      requests.push(http.get('/api/v1/aiops/scope/').then(setScope));
+      requests.push(reloadRecords());
+    }
+    Promise.all(requests);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -220,7 +360,7 @@ export default function AIOpsIndex() {
   }];
 
   return (
-    <AuthDiv auth="aiops.investigation.view">
+    <AuthDiv auth="aiops.investigation.view|aiops.config.manage">
       <Breadcrumb>
         <Breadcrumb.Item>首页</Breadcrumb.Item>
         <Breadcrumb.Item>知识与 AI</Breadcrumb.Item>
@@ -233,8 +373,11 @@ export default function AIOpsIndex() {
           ? `只读模式已启用 · ${config.provider} / ${config.model} · 模型没有执行工具`
           : 'AI 运维尚未配置大模型；仍可预览授权证据，但不能发起模型调查。'}
         description="AI 只读取当前用户有权访问的资产、指标、告警和已发布知识。输出必须引用真实来源，方案不可直接执行。"
+        action={canManageConfig ? (
+          <Button icon={<SettingOutlined/>} onClick={() => setConfigVisible(true)}>模型配置</Button>
+        ) : null}
         style={{marginBottom: 16}}/>
-      <Card title={<Space><RobotOutlined/>新建只读调查</Space>}>
+      {canViewInvestigations && <Card title={<Space><RobotOutlined/>新建只读调查</Space>}>
         <Form form={form} layout="vertical">
           <Form.Item
             name="question"
@@ -273,13 +416,21 @@ export default function AIOpsIndex() {
             </Space>
           )}
         </Form>
-      </Card>
-      <Card title="调查历史" style={{marginTop: 16}} extra={<Button onClick={reloadRecords}>刷新</Button>}>
+      </Card>}
+      {canViewInvestigations && <Card title="调查历史" style={{marginTop: 16}} extra={<Button onClick={reloadRecords}>刷新</Button>}>
         <Table rowKey="id" dataSource={records} loading={loading} columns={columns}
                pagination={{showSizeChanger: true, showTotal: total => `共 ${total} 条`}}/>
-      </Card>
+      </Card>}
       <InvestigationDetail visible={Boolean(detail)} record={detail || {}}
                            onClose={() => setDetail(null)}/>
+      <ModelConfigModal
+        visible={configVisible}
+        config={config}
+        onCancel={() => setConfigVisible(false)}
+        onSuccess={data => {
+          setConfig(data);
+          setConfigVisible(false);
+        }}/>
     </AuthDiv>
   );
 }

@@ -2,8 +2,10 @@ import json
 import uuid
 from datetime import datetime
 
+from django.conf import settings
 from django.db import models
 
+from apps.assets.encryption import get_default_cipher
 from libs import ModelMixin
 
 
@@ -12,6 +14,53 @@ def _json(value, fallback):
         return json.loads(value)
     except (TypeError, ValueError):
         return fallback
+
+
+class AIProviderConfig(models.Model, ModelMixin):
+    id = models.PositiveSmallIntegerField(primary_key=True, default=1, editable=False)
+    enabled = models.BooleanField(default=False)
+    base_url = models.CharField(max_length=500)
+    model = models.CharField(max_length=100, blank=True)
+    key_id = models.CharField(max_length=50, default='primary')
+    api_key_data = models.TextField(null=True, blank=True)
+    json_mode = models.BooleanField(default=True)
+    request_timeout = models.PositiveIntegerField(default=30)
+    max_hosts = models.PositiveIntegerField(default=20)
+    knowledge_limit = models.PositiveIntegerField(default=8)
+    max_output_tokens = models.PositiveIntegerField(default=2000)
+    max_response_bytes = models.PositiveIntegerField(default=1048576)
+    rate_limit_per_minute = models.PositiveIntegerField(default=5)
+    updated_by = models.ForeignKey(
+        'account.User', models.PROTECT, related_name='updated_ai_provider_configs'
+    )
+    created_at = models.DateTimeField(default=datetime.now)
+    updated_at = models.DateTimeField(default=datetime.now)
+
+    @property
+    def has_api_key(self):
+        return bool(self.api_key_data)
+
+    def set_api_key(self, value, key_id=None):
+        value = str(value or '').strip()
+        if not value:
+            raise ValueError('模型 API Key 不能为空')
+        if len(value.encode('utf-8')) > 8192:
+            raise ValueError('模型 API Key 不能超过 8192 字节')
+        self.key_id = key_id or settings.SPUG_CREDENTIAL_PRIMARY_KEY_ID
+        self.api_key_data = get_default_cipher(self.key_id).encrypt(
+            value, 'ai-provider:%s' % self.id
+        )
+
+    def reveal_api_key(self):
+        if not self.api_key_data:
+            return ''
+        value = get_default_cipher(self.key_id).decrypt(
+            self.api_key_data, 'ai-provider:%s' % self.id
+        )
+        return value.decode('utf-8')
+
+    class Meta:
+        db_table = 'ai_provider_config'
 
 
 class AIInvestigation(models.Model, ModelMixin):

@@ -14,6 +14,7 @@ from apps.knowledge.services import accessible_documents
 from apps.observability.models import AlertEvent, MetricTarget
 from apps.observability.services import ObservabilityError, query_summary
 
+from .config import get_runtime_config
 from .models import AIActionPlan
 
 
@@ -235,9 +236,9 @@ def _authorized_alert(user, alert_id):
     return alert
 
 
-def _host_evidence(user, host_ids):
-    if len(host_ids) > settings.SPUG_AIOPS_MAX_HOSTS:
-        raise AIOpsError('单次 AI 调查最多选择 %s 台主机' % settings.SPUG_AIOPS_MAX_HOSTS)
+def _host_evidence(user, host_ids, config):
+    if len(host_ids) > config['max_hosts']:
+        raise AIOpsError('单次 AI 调查最多选择 %s 台主机' % config['max_hosts'])
     if not user.is_supper and not has_host_perm(user, host_ids, action='host.view'):
         raise AIOpsError('调查范围包含无权查看的主机')
     hosts = Host.objects.filter(pk__in=host_ids).select_related('hostextend')
@@ -344,7 +345,7 @@ def _knowledge_tokens(question):
     return result[:12]
 
 
-def _knowledge_evidence(user, question):
+def _knowledge_evidence(user, question, config):
     tokens = _knowledge_tokens(question)
     if not tokens:
         return []
@@ -380,11 +381,12 @@ def _knowledge_evidence(user, question):
             },
             document.updated_at.isoformat(),
         )
-        for _, document, excerpt in ranked[:settings.SPUG_AIOPS_KNOWLEDGE_LIMIT]
+        for _, document, excerpt in ranked[:config['knowledge_limit']]
     ]
 
 
-def collect_evidence(user, question, host_ids=None, alert_id=None):
+def collect_evidence(user, question, host_ids=None, alert_id=None, config=None):
+    config = config or get_runtime_config()
     try:
         host_ids = sorted({int(item) for item in (host_ids or [])})
     except (TypeError, ValueError):
@@ -397,10 +399,10 @@ def collect_evidence(user, question, host_ids=None, alert_id=None):
         host_ids.append(selected_alert.host_id)
         host_ids.sort()
     evidence = []
-    evidence.extend(_host_evidence(user, host_ids))
+    evidence.extend(_host_evidence(user, host_ids, config))
     evidence.extend(_metrics_evidence(user, host_ids))
     evidence.extend(_alert_evidence(user, host_ids, selected_alert))
-    evidence.extend(_knowledge_evidence(user, question))
+    evidence.extend(_knowledge_evidence(user, question, config))
     seen = set()
     unique = []
     for item in evidence:
@@ -457,8 +459,7 @@ def _messages(question, evidence):
     ]
 
 
-def _read_provider_response(response):
-    maximum = settings.SPUG_AIOPS_MAX_RESPONSE_BYTES
+def _read_provider_response(response, maximum):
     content_length = (response.headers or {}).get('Content-Length')
     if content_length:
         try:
@@ -484,30 +485,33 @@ def _read_provider_response(response):
     return data
 
 
-def call_provider(question, evidence):
-    if not settings.SPUG_AIOPS_ENABLED:
+def call_provider(question, evidence, config=None):
+    config = config or get_runtime_config(include_secret=True)
+    if 'api_key' not in config:
+        raise AIOpsError('模型运行配置缺少 API Key 状态')
+    if not config['enabled']:
         raise AIOpsError('AI 运维功能尚未启用')
-    url = settings.SPUG_AIOPS_BASE_URL.rstrip('/') + '/chat/completions'
+    url = config['base_url'].rstrip('/') + '/chat/completions'
     headers = {'Content-Type': 'application/json'}
-    if settings.SPUG_AIOPS_API_KEY:
-        headers['Authorization'] = 'Bearer ' + settings.SPUG_AIOPS_API_KEY
+    if config['api_key']:
+        headers['Authorization'] = 'Bearer ' + config['api_key']
     payload = {
-        'model': settings.SPUG_AIOPS_MODEL,
+        'model': config['model'],
         'messages': _messages(question, evidence),
         'temperature': 0.1,
-        'max_tokens': settings.SPUG_AIOPS_MAX_OUTPUT_TOKENS,
+        'max_tokens': config['max_output_tokens'],
     }
-    if settings.SPUG_AIOPS_JSON_MODE:
+    if config['json_mode']:
         payload['response_format'] = {'type': 'json_object'}
     response = None
     try:
         response = requests.post(
             url, headers=headers, json=payload,
-            timeout=settings.SPUG_AIOPS_REQUEST_TIMEOUT,
+            timeout=config['request_timeout'],
             stream=True,
         )
         response.raise_for_status()
-        data = _read_provider_response(response)
+        data = _read_provider_response(response, config['max_response_bytes'])
     except (requests.RequestException, ValueError, TypeError, KeyError, IndexError):
         logging.exception('AI provider request failed')
         raise AIOpsError('大模型服务暂时不可用或返回格式无效')
@@ -518,7 +522,7 @@ def call_provider(question, evidence):
         content = data['choices'][0]['message']['content']
     except (TypeError, KeyError, IndexError):
         raise AIOpsError('大模型服务未返回诊断内容')
-    if not isinstance(content, str) or len(content.encode('utf-8')) > settings.SPUG_AIOPS_MAX_RESPONSE_BYTES:
+    if not isinstance(content, str) or len(content.encode('utf-8')) > config['max_response_bytes']:
         raise AIOpsError('大模型返回内容为空或超过安全限制')
     content = content.strip()
     if content.startswith('```'):
@@ -547,20 +551,22 @@ def call_provider(question, evidence):
     }
 
 
-def execute_investigation(investigation, evidence=None):
+def execute_investigation(investigation, evidence=None, config=None):
     try:
+        config = config or get_runtime_config(include_secret=True)
         if evidence is None:
             evidence = collect_evidence(
                 investigation.created_by,
                 investigation.question,
                 investigation.host_id_list,
                 investigation.alert_id,
+                config=config,
             )
         citations = [item['citation'] for item in evidence]
         investigation.evidence = json.dumps(evidence, ensure_ascii=False, default=str)
         investigation.citations = json.dumps(citations, ensure_ascii=False)
         investigation.save(update_fields=('evidence', 'citations'))
-        result, usage = call_provider(investigation.question, evidence)
+        result, usage = call_provider(investigation.question, evidence, config=config)
         with transaction.atomic():
             investigation.status = 'completed'
             investigation.result = json.dumps(result, ensure_ascii=False)

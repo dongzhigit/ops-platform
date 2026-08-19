@@ -80,7 +80,7 @@ docker exec spug python3 /data/spug/spug_api/manage.py migrate_host_credentials 
    ```
 
 4. 重建/重启容器，使旧 `primary` 和新 `v2` 同时可读；新写入自动使用 `v2`。
-5. 先预检查，再执行逐条重新加密和回读验证：
+5. 先预检查，再执行逐条重新加密和回读验证。该命令同时覆盖资产凭据和 AI 运维页面保存的模型 API Key：
 
    ```bash
    docker exec spug python3 /data/spug/spug_api/manage.py rotate_credential_master_key --target-key-id v2

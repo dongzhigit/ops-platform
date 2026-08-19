@@ -18,6 +18,7 @@ export const ACTION_LABELS = {
   'knowledge.document.restore': '恢复知识文档版本',
   'aiops.evidence.preview': '预览 AI 调查证据',
   'aiops.investigation.run': '发起只读 AI 调查',
+  'aiops.config.write': '修改 AI 模型配置',
 }
 
 export const RISK_LABELS = {

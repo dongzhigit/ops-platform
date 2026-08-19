@@ -172,6 +172,12 @@ export default [{
       {key: 'view', label: '查看自己的 AI 调查'},
       {key: 'run', label: '发起只读 AI 调查'},
     ]
+  }, {
+    key: 'config',
+    label: '模型配置',
+    perms: [
+      {key: 'manage', label: '管理模型配置和密钥'},
+    ]
   }]
 }, {
   key: 'monitor',

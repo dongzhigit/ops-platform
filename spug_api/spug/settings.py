@@ -147,7 +147,7 @@ AUTHENTICATION_EXCLUDES = (
 )
 
 SPUG_VERSION = 'v3.4.0'
-OPS_PLATFORM_VERSION = os.environ.get('OPS_PLATFORM_VERSION', '0.1.0-alpha.11')
+OPS_PLATFORM_VERSION = os.environ.get('OPS_PLATFORM_VERSION', '0.1.0-alpha.12')
 
 # override default config
 try:

@@ -98,9 +98,9 @@ export default [
   },
   {
     icon: <ReadOutlined/>, title: '知识与 AI',
-    auth: 'knowledge.space.view|knowledge.document.view|aiops.investigation.view', child: [
+    auth: 'knowledge.space.view|knowledge.document.view|aiops.investigation.view|aiops.config.manage', child: [
       {title: '知识库', auth: 'knowledge.space.view|knowledge.document.view', path: '/knowledge', component: KnowledgeIndex},
-      {title: 'AI 运维', auth: 'aiops.investigation.view', path: '/aiops', component: AIOpsIndex, icon: <RobotOutlined/>},
+      {title: 'AI 运维', auth: 'aiops.investigation.view|aiops.config.manage', path: '/aiops', component: AIOpsIndex, icon: <RobotOutlined/>},
     ]
   },
   {

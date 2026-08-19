@@ -2,13 +2,19 @@ import json
 import uuid
 from datetime import datetime, timedelta
 
-from django.conf import settings
 from django.core.cache import cache
+from django.core.exceptions import ValidationError
 from django.views.generic import View
 
 from apps.audit.services import record_event
+from apps.assets.encryption import CredentialEncryptionError
 from libs import Argument, JsonParser, auth, json_response
 
+from .config import (
+    AIConfigError,
+    get_runtime_config,
+    save_runtime_config,
+)
 from .models import AIInvestigation
 from .services import (
     AIOpsError,
@@ -48,19 +54,81 @@ def _parse_scope(body):
 
 
 class AIConfigView(View):
-    @auth('aiops.investigation.view')
+    @auth('aiops.investigation.view|aiops.config.manage')
     def get(self, request):
-        return _response({
-            'enabled': settings.SPUG_AIOPS_ENABLED,
+        config = get_runtime_config()
+        config.update({
             'provider': PROVIDER,
-            'model': settings.SPUG_AIOPS_MODEL,
             'prompt_version': PROMPT_VERSION,
-            'api_key_configured': bool(settings.SPUG_AIOPS_API_KEY),
-            'max_hosts': settings.SPUG_AIOPS_MAX_HOSTS,
-            'rate_limit_per_minute': settings.SPUG_AIOPS_RATE_LIMIT_PER_MINUTE,
             'read_only': True,
             'execution_enabled': False,
+            'can_manage': bool(request.user.has_perms(['aiops.config.manage'])),
         })
+        return _response(config)
+
+    @auth('aiops.config.manage')
+    def post(self, request):
+        form, error = JsonParser(
+            Argument('enabled', type=bool),
+            Argument(
+                'base_url', handler=str.strip,
+                filter=lambda x: 1 <= len(x) <= 500,
+                help='模型服务地址长度必须在 1 到 500 个字符之间',
+            ),
+            Argument(
+                'model', default='', handler=str.strip,
+                filter=lambda x: len(x) <= 100,
+            ),
+            Argument('api_key', type=str, required=False),
+            Argument('clear_api_key', type=bool, default=False),
+            Argument('json_mode', type=bool),
+            Argument('request_timeout', type=int, filter=lambda x: 1 <= x <= 120),
+            Argument('max_hosts', type=int, filter=lambda x: 1 <= x <= 100),
+            Argument('knowledge_limit', type=int, filter=lambda x: 1 <= x <= 20),
+            Argument('max_output_tokens', type=int, filter=lambda x: 256 <= x <= 8192),
+            Argument(
+                'max_response_bytes', type=int,
+                filter=lambda x: 4096 <= x <= 4194304,
+            ),
+            Argument(
+                'rate_limit_per_minute', type=int,
+                filter=lambda x: 1 <= x <= 60,
+            ),
+        ).parse(request.body)
+        if error:
+            return _response(error=error)
+        values = dict(form)
+        try:
+            config = save_runtime_config(actor=request.user, values=values)
+        except (AIConfigError, CredentialEncryptionError, ValidationError, ValueError) as exc:
+            return _response(error=str(exc))
+        correlation_id = uuid.uuid4()
+        record_event(
+            correlation_id=correlation_id,
+            actor=request.user,
+            action='aiops.config.write',
+            resource_type='ai_provider_config',
+            resource_id='1',
+            result='succeeded',
+            details={
+                'enabled': config['enabled'],
+                'base_url': config['base_url'],
+                'model': config['model'],
+                'json_mode': config['json_mode'],
+                'api_key_updated': bool(values.get('api_key')),
+                'api_key_cleared': bool(values.get('clear_api_key')),
+            },
+            request=request,
+        )
+        config.update({
+            'provider': PROVIDER,
+            'prompt_version': PROMPT_VERSION,
+            'read_only': True,
+            'execution_enabled': False,
+            'can_manage': True,
+            'correlation_id': str(correlation_id),
+        })
+        return _response(config)
 
 
 class AIScopeView(View):
@@ -75,9 +143,11 @@ class AIEvidencePreviewView(View):
         form, error = _parse_scope(request.body)
         if error:
             return _response(error=error)
+        config = get_runtime_config()
         try:
             evidence = collect_evidence(
-                request.user, form.question, form.host_ids, form.alert_id
+                request.user, form.question, form.host_ids, form.alert_id,
+                config=config,
             )
         except AIOpsError as exc:
             return _response(error=str(exc))
@@ -131,7 +201,11 @@ class AIInvestigationView(View):
 
     @auth('aiops.investigation.run')
     def post(self, request):
-        if not settings.SPUG_AIOPS_ENABLED:
+        try:
+            config = get_runtime_config(include_secret=True)
+        except AIConfigError as exc:
+            return _response(error=str(exc))
+        if not config['enabled']:
             return _response(error='AI 运维功能尚未启用，请先配置大模型服务')
         form, error = _parse_scope(request.body)
         if error:
@@ -144,16 +218,17 @@ class AIInvestigationView(View):
             created_by=request.user,
             created_at__gte=datetime.now() - timedelta(minutes=1),
         ).count()
-        if recent >= settings.SPUG_AIOPS_RATE_LIMIT_PER_MINUTE:
+        if recent >= config['rate_limit_per_minute']:
             return _response(error='AI 调查请求过于频繁，请稍后再试')
         lock_key = 'aiops:investigation:user:%s' % request.user.id
         if not cache.add(
-                lock_key, 'running', timeout=settings.SPUG_AIOPS_REQUEST_TIMEOUT + 30):
+                lock_key, 'running', timeout=config['request_timeout'] + 30):
             return _response(error='当前账户已有 AI 调查正在运行')
         try:
             try:
                 evidence = collect_evidence(
-                    request.user, form.question, host_ids, form.alert_id
+                    request.user, form.question, host_ids, form.alert_id,
+                    config=config,
                 )
             except AIOpsError as exc:
                 return _response(error=str(exc))
@@ -164,7 +239,7 @@ class AIInvestigationView(View):
                 alert_id=form.alert_id,
                 status='running',
                 provider=PROVIDER,
-                model=settings.SPUG_AIOPS_MODEL,
+                model=config['model'],
                 prompt_version=PROMPT_VERSION,
             )
             record_event(
@@ -177,13 +252,15 @@ class AIInvestigationView(View):
                 details={
                     'host_count': len(host_ids),
                     'alert_id': form.alert_id,
-                    'model': settings.SPUG_AIOPS_MODEL,
+                    'model': config['model'],
                     'prompt_version': PROMPT_VERSION,
                     'read_only': True,
                 },
                 request=request,
             )
-            investigation = execute_investigation(investigation, evidence=evidence)
+            investigation = execute_investigation(
+                investigation, evidence=evidence, config=config
+            )
             record_event(
                 correlation_id=investigation.correlation_id,
                 actor=request.user,
