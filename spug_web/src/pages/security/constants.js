@@ -12,6 +12,12 @@ export const ACTION_LABELS = {
   'config.write': '修改配置',
   'host.view': '查看主机',
   'metrics.view': '查看主机指标与告警',
+  'knowledge.space.write': '管理知识空间',
+  'knowledge.membership.write': '管理知识空间成员',
+  'knowledge.document.write': '编辑知识文档',
+  'knowledge.document.restore': '恢复知识文档版本',
+  'aiops.evidence.preview': '预览 AI 调查证据',
+  'aiops.investigation.run': '发起只读 AI 调查',
 }
 
 export const RISK_LABELS = {

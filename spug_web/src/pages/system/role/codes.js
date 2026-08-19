@@ -144,6 +144,36 @@ export default [{
     ]
   }]
 }, {
+  key: 'knowledge',
+  label: '知识库',
+  pages: [{
+    key: 'space',
+    label: '知识空间',
+    perms: [
+      {key: 'view', label: '查看空间'},
+      {key: 'manage', label: '管理空间和成员'},
+    ]
+  }, {
+    key: 'document',
+    label: '知识文档',
+    perms: [
+      {key: 'view', label: '查看文档'},
+      {key: 'edit', label: '编辑文档'},
+      {key: 'publish', label: '发布文档'},
+    ]
+  }]
+}, {
+  key: 'aiops',
+  label: 'AI 运维',
+  pages: [{
+    key: 'investigation',
+    label: 'AI 调查',
+    perms: [
+      {key: 'view', label: '查看自己的 AI 调查'},
+      {key: 'run', label: '发起只读 AI 调查'},
+    ]
+  }]
+}, {
   key: 'monitor',
   label: '监控中心',
   pages: [{

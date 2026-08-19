@@ -45,6 +45,12 @@ if [[ "$observability_enabled" =~ ^(1|true|yes|on)$ ]]; then
     require_secret_file SPUG_ALERTMANAGER_WEBHOOK_TOKEN_FILE
 fi
 
+aiops_enabled="${SPUG_AIOPS_ENABLED:-false}"
+aiops_enabled="${aiops_enabled,,}"
+if [[ "$aiops_enabled" =~ ^(1|true|yes|on)$ ]]; then
+    require_secret_file SPUG_AIOPS_API_KEY_FILE
+fi
+
 if [ "${#SPUG_SECRET_KEY}" -lt 32 ]; then
     echo "error: SPUG_SECRET_KEY must contain at least 32 characters" >&2
     exit 1

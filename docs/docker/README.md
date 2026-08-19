@@ -34,7 +34,20 @@ docker compose ps
 docker exec spug init_spug admin '请替换为高强度密码'
 ```
 
-资产凭据、对象授权、旧私钥迁移和主密钥轮换说明见 [M1 资产、凭据与对象授权](../M1_ASSET_ACCESS.md)，高风险操作流程见 [M1 高风险操作审批与审计](../M1_APPROVAL_AUDIT.md)，RDP/VNC 网关配置和当前边界见 [M3 RDP/VNC 安全接入](../M3_REMOTE_DESKTOP.md)，Prometheus/Alertmanager 监控闭环见 [M4 主机监控与告警闭环](../M4_OBSERVABILITY.md)。
+资产凭据、对象授权、旧私钥迁移和主密钥轮换说明见 [M1 资产、凭据与对象授权](../M1_ASSET_ACCESS.md)，高风险操作流程见 [M1 高风险操作审批与审计](../M1_APPROVAL_AUDIT.md)，RDP/VNC 网关配置和当前边界见 [M3 RDP/VNC 安全接入](../M3_REMOTE_DESKTOP.md)，Prometheus/Alertmanager 监控闭环见 [M4 主机监控与告警闭环](../M4_OBSERVABILITY.md)，知识库与只读 AI 调查见 [M5 知识库与只读 AI 运维](../M5_KNOWLEDGE_AIOPS.md)。
+
+## 启用只读 AI 调查
+
+AI 默认关闭。选择可信的 OpenAI-compatible Chat Completions 服务后，将 `.env` 中的 `SPUG_AIOPS_ENABLED` 改为 `true`，填写 `SPUG_AIOPS_BASE_URL` 和 `SPUG_AIOPS_MODEL`，再创建独立密钥文件：
+
+```bash
+printf '%s' '替换为独立的模型服务密钥' > secrets/aiops_api_key
+chmod 400 secrets/aiops_api_key
+```
+
+同时设置 `SPUG_AIOPS_API_KEY_FILE=/run/spug-secrets/aiops_api_key`。生产模式要求模型地址使用 HTTPS。若兼容服务不支持 `response_format=json_object`，可设置 `SPUG_AIOPS_JSON_MODE=false`，后端仍会严格解析和校验 JSON，并按 `SPUG_AIOPS_MAX_RESPONSE_BYTES` 流式限制响应体。不要把模型密钥写入镜像、Git、浏览器或数据库。
+
+调查时会把当前用户有权访问的主机基础信息、指标、告警摘要和已发布知识片段发送给所配置的模型服务。使用外部供应商前必须确认数据分类、跨境、保留与审计要求；敏感环境优先使用受控内网模型服务。当前模型没有执行工具，不能运行 Shell、SSH、发布或配置变更。
 
 ## 网络与 TLS
 
@@ -43,6 +56,7 @@ docker exec spug init_spug admin '请替换为高强度密码'
 - 反向代理必须设置 `X-Forwarded-Proto`，使用 HTTPS 时保持 `SPUG_SECURE_COOKIES=true`。
 - 外层反向代理必须关闭或脱敏 `/api/v1/gateway/sessions/*/launch/` 与 `/guacamole/` 的查询字符串日志。
 - Prometheus、Alertmanager 和 exporter 不应发布公网端口；限制监控网络只能访问批准的采集目标。
+- 限制 Spug 到模型服务的出站地址；模型接口不得回连资产网络，也不得复用应用、数据库或监控密钥。
 - 若由外部代理完成 HTTPS 跳转，`SPUG_SSL_REDIRECT` 可保持 `false`，避免配置错误造成循环重定向。
 
 ## 权限说明
@@ -56,7 +70,7 @@ M0 镜像仍依赖 CentOS 7/Python 3.6，并临时锁定为 `linux/amd64`；ARM 
 ## 上线前检查
 
 - `.env` 不得提交到 Git。
-- `secrets/` 不得提交到 Git，目录权限为 `0700`，两个只读监控 token 彼此独立。
+- `secrets/` 不得提交到 Git，目录权限为 `0700`，两个只读监控 token 与可选 AI 模型密钥彼此独立。
 - 域名和 TLS 证书已配置，公网不能直接访问数据库和 Redis。
 - 已执行数据库备份和恢复演练。
 - `SPUG_CREDENTIAL_MASTER_KEY` 已独立备份并完成凭据恢复演练。

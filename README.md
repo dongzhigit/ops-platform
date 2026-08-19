@@ -8,13 +8,15 @@ Spug是面向中小型企业设计的轻量级无Agent的自动化运维平台�
 
 ## 二次开发版本
 
-当前仓库正在建设私有化智能运维平台，开发中的预发布版本为 `ops-v0.1.0-alpha.9`（基于 OpenSpug v3.4.0 二次开发）。本版本已完成安全工程基线、M1 资产凭据/身份/对象授权、高风险操作审批与防篡改审计，以及“我的申请 / 待我审批 / 审计日志”前端；批量命令、文件分发、SSH 文件上传/删除和计划任务主要写操作已接入审批门禁。SFTP 已支持分片续传、批量队列、校验、Range 下载和受审批在线编辑。RDP/VNC 已通过 Apache Guacamole 1.6.0 接入端点管理、短时一次性启动票据、启动前二次授权和会话元数据审计，但真实连接状态回调、强制断开和会话录像尚未完成。完整可观测性、知识库和 AI 闭环仍在后续阶段开发。
+当前仓库正在建设私有化智能运维平台，开发中的预发布版本为 `ops-v0.1.0-alpha.11`（基于 OpenSpug v3.4.0 二次开发）。现已完成资产凭据/身份/对象授权、高风险操作审批与防篡改审计；SFTP 支持分片续传、批量队列、校验、Range 下载和受审批在线编辑；RDP/VNC 通过 Apache Guacamole 接入短时一次性票据与二次授权；Prometheus/Alertmanager 提供主机指标、规则告警、恢复、认领和静默闭环；知识库提供空间角色、文档审批、不可覆盖版本和授权检索；AI 运维默认关闭，仅基于当前用户授权证据进行带引用的只读调查，不携带执行工具。远程会话真实状态回调/强制断开/录像、任务证据和配置中心统一授权仍待后续完善。
 
 - [建设蓝图](docs/OPS_PLATFORM_BLUEPRINT.md)
 - [M1 资产与授权说明](docs/M1_ASSET_ACCESS.md)
 - [M1 审批与审计说明](docs/M1_APPROVAL_AUDIT.md)
 - [M2 SFTP 续传与清理说明](docs/M2_RESUMABLE_SFTP.md)
 - [M3 RDP/VNC 安全接入](docs/M3_REMOTE_DESKTOP.md)
+- [M4 主机监控与告警闭环](docs/M4_OBSERVABILITY.md)
+- [M5 知识库与只读 AI 运维](docs/M5_KNOWLEDGE_AIOPS.md)
 - [安全验证基线](docs/SECURITY_BASELINE.md)
 - [私有化 Docker 部署](docs/docker/README.md)
 - [版本记录](CHANGELOG.md)

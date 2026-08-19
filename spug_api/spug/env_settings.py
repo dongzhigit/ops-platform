@@ -111,6 +111,17 @@ def validate_service_url(value, *, name):
     return value
 
 
+def validate_model_name(value, *, name='SPUG_AIOPS_MODEL', required=False):
+    value = str(value or '').strip()
+    if required and not value:
+        raise ValueError('%s is required when AI operations is enabled' % name)
+    if value and (
+            len(value) > 100
+            or not all(char.isalnum() or char in '._:/-' for char in value)):
+        raise ValueError('%s contains unsupported characters or is too long' % name)
+    return value
+
+
 def validate_guacamole_key(value, *, name='SPUG_GUACAMOLE_JSON_SECRET_KEY'):
     value = str(value).strip().lower()
     if len(value) != 32:
@@ -175,6 +186,7 @@ def load_security_settings(*, default_secret, default_debug, default_allowed_hos
     provided_webhook_token = load_secret_value(
         environ, 'SPUG_ALERTMANAGER_WEBHOOK_TOKEN'
     )
+    provided_aiops_key = load_secret_value(environ, 'SPUG_AIOPS_API_KEY')
     debug = env_bool('SPUG_DEBUG', default=False if is_production else default_debug, environ=environ)
     allowed_hosts = env_list('SPUG_ALLOWED_HOSTS', default_allowed_hosts, environ=environ)
     remote_gateway_enabled = env_bool(
@@ -182,6 +194,16 @@ def load_security_settings(*, default_secret, default_debug, default_allowed_hos
     )
     observability_enabled = env_bool(
         'SPUG_OBSERVABILITY_ENABLED', default=not is_production, environ=environ
+    )
+    aiops_enabled = env_bool(
+        'SPUG_AIOPS_ENABLED', default=False, environ=environ
+    )
+    aiops_model = validate_model_name(
+        environ.get('SPUG_AIOPS_MODEL', ''), required=aiops_enabled
+    )
+    aiops_base_url = validate_service_url(
+        environ.get('SPUG_AIOPS_BASE_URL', 'http://127.0.0.1:11434/v1'),
+        name='SPUG_AIOPS_BASE_URL',
     )
 
     if is_production:
@@ -229,6 +251,25 @@ def load_security_settings(*, default_secret, default_debug, default_allowed_hos
             }
             if len(independent_values) != 6:
                 raise ValueError('all production observability and application keys must be independent')
+        if aiops_enabled:
+            if not str(environ.get('SPUG_AIOPS_BASE_URL', '')).strip():
+                raise ValueError(
+                    'SPUG_AIOPS_BASE_URL is required when production AI operations is enabled'
+                )
+            if urlsplit(aiops_base_url).scheme != 'https':
+                raise ValueError(
+                    'SPUG_AIOPS_BASE_URL must use HTTPS when production AI operations is enabled'
+                )
+            if not provided_aiops_key:
+                raise ValueError(
+                    'SPUG_AIOPS_API_KEY or its _FILE variant is required '
+                    'when production AI operations is enabled'
+                )
+            if provided_aiops_key in {
+                    provided_secret, provided_master_key, provided_audit_key,
+                    provided_guacamole_key, provided_discovery_token,
+                    provided_webhook_token}:
+                raise ValueError('SPUG_AIOPS_API_KEY must be an independent production key')
 
     fallback_master_key = (
         validate_master_key(provided_master_key)
@@ -254,6 +295,32 @@ def load_security_settings(*, default_secret, default_debug, default_allowed_hos
         'ssl_redirect': env_bool('SPUG_SSL_REDIRECT', default=False, environ=environ),
         'remote_gateway_enabled': remote_gateway_enabled,
         'observability_enabled': observability_enabled,
+        'aiops_enabled': aiops_enabled,
+        'aiops_api_key': provided_aiops_key,
+        'aiops_base_url': aiops_base_url,
+        'aiops_model': aiops_model,
+        'aiops_json_mode': env_bool(
+            'SPUG_AIOPS_JSON_MODE', default=True, environ=environ
+        ),
+        'aiops_request_timeout': env_int(
+            'SPUG_AIOPS_REQUEST_TIMEOUT', 30, 1, 120, environ=environ
+        ),
+        'aiops_max_hosts': env_int(
+            'SPUG_AIOPS_MAX_HOSTS', 20, 1, 100, environ=environ
+        ),
+        'aiops_knowledge_limit': env_int(
+            'SPUG_AIOPS_KNOWLEDGE_LIMIT', 8, 1, 20, environ=environ
+        ),
+        'aiops_max_output_tokens': env_int(
+            'SPUG_AIOPS_MAX_OUTPUT_TOKENS', 2000, 256, 8192, environ=environ
+        ),
+        'aiops_rate_limit_per_minute': env_int(
+            'SPUG_AIOPS_RATE_LIMIT_PER_MINUTE', 5, 1, 60, environ=environ
+        ),
+        'aiops_max_response_bytes': env_int(
+            'SPUG_AIOPS_MAX_RESPONSE_BYTES', 1048576, 4096, 4194304,
+            environ=environ,
+        ),
         'guacamole_json_secret_key': (
             validate_guacamole_key(provided_guacamole_key)
             if provided_guacamole_key

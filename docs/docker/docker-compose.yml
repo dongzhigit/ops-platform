@@ -161,6 +161,7 @@ services:
       - ${SPUG_DATA_ROOT:-./data}/repos:/data/repos
       - ${SPUG_OBSERVABILITY_SECRETS_ROOT:-./secrets}/prometheus_discovery_token:/run/secrets/prometheus_discovery_token:ro
       - ${SPUG_OBSERVABILITY_SECRETS_ROOT:-./secrets}/alertmanager_webhook_token:/run/secrets/alertmanager_webhook_token:ro
+      - ${SPUG_SECRETS_ROOT:-./secrets}:/run/spug-secrets:ro
     ports:
       # Keep the service private by default. Put a TLS reverse proxy in front
       # or explicitly change SPUG_BIND_HOST for a trusted network.
@@ -184,6 +185,17 @@ services:
       SPUG_ALERTMANAGER_URL: http://alertmanager:9093
       SPUG_OBSERVABILITY_REQUEST_TIMEOUT: ${SPUG_OBSERVABILITY_REQUEST_TIMEOUT:-10}
       SPUG_ALERT_RETENTION_DAYS: ${SPUG_ALERT_RETENTION_DAYS:-90}
+      SPUG_AIOPS_ENABLED: ${SPUG_AIOPS_ENABLED:-false}
+      SPUG_AIOPS_BASE_URL: ${SPUG_AIOPS_BASE_URL:-http://127.0.0.1:11434/v1}
+      SPUG_AIOPS_MODEL: ${SPUG_AIOPS_MODEL:-}
+      SPUG_AIOPS_API_KEY_FILE: ${SPUG_AIOPS_API_KEY_FILE:-}
+      SPUG_AIOPS_JSON_MODE: ${SPUG_AIOPS_JSON_MODE:-true}
+      SPUG_AIOPS_REQUEST_TIMEOUT: ${SPUG_AIOPS_REQUEST_TIMEOUT:-30}
+      SPUG_AIOPS_MAX_HOSTS: ${SPUG_AIOPS_MAX_HOSTS:-20}
+      SPUG_AIOPS_KNOWLEDGE_LIMIT: ${SPUG_AIOPS_KNOWLEDGE_LIMIT:-8}
+      SPUG_AIOPS_MAX_OUTPUT_TOKENS: ${SPUG_AIOPS_MAX_OUTPUT_TOKENS:-2000}
+      SPUG_AIOPS_MAX_RESPONSE_BYTES: ${SPUG_AIOPS_MAX_RESPONSE_BYTES:-1048576}
+      SPUG_AIOPS_RATE_LIMIT_PER_MINUTE: ${SPUG_AIOPS_RATE_LIMIT_PER_MINUTE:-5}
       SPUG_ALLOWED_HOSTS: ${SPUG_ALLOWED_HOSTS:?SPUG_ALLOWED_HOSTS is required}
       SPUG_CSRF_TRUSTED_ORIGINS: ${SPUG_CSRF_TRUSTED_ORIGINS:-}
       SPUG_SECURE_COOKIES: ${SPUG_SECURE_COOKIES:-true}

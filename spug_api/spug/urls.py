@@ -24,6 +24,8 @@ urlpatterns = [
     path('v1/assets/', include('apps.assets.urls')),
     path('v1/gateway/', include('apps.gateway.urls')),
     path('v1/observability/', include('apps.observability.urls')),
+    path('v1/knowledge/', include('apps.knowledge.urls')),
+    path('v1/aiops/', include('apps.aiops.urls')),
     path('account/', include('apps.account.urls')),
     path('host/', include('apps.host.urls')),
     path('exec/', include('apps.exec.urls')),

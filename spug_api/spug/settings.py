@@ -42,6 +42,8 @@ INSTALLED_APPS = [
     'apps.assets',
     'apps.gateway',
     'apps.observability',
+    'apps.knowledge',
+    'apps.aiops',
     'apps.file',
     'apps.host',
     'apps.setting',
@@ -145,7 +147,7 @@ AUTHENTICATION_EXCLUDES = (
 )
 
 SPUG_VERSION = 'v3.4.0'
-OPS_PLATFORM_VERSION = os.environ.get('OPS_PLATFORM_VERSION', '0.1.0-alpha.10')
+OPS_PLATFORM_VERSION = os.environ.get('OPS_PLATFORM_VERSION', '0.1.0-alpha.11')
 
 # override default config
 try:
@@ -170,6 +172,17 @@ SPUG_CREDENTIAL_PRIMARY_KEY_ID = _security['credential_primary_key_id']
 SPUG_AUDIT_SIGNING_KEY = _security['audit_signing_key']
 SPUG_REMOTE_GATEWAY_ENABLED = _security['remote_gateway_enabled']
 SPUG_OBSERVABILITY_ENABLED = _security['observability_enabled']
+SPUG_AIOPS_ENABLED = _security['aiops_enabled']
+SPUG_AIOPS_API_KEY = _security['aiops_api_key']
+SPUG_AIOPS_BASE_URL = _security['aiops_base_url']
+SPUG_AIOPS_MODEL = _security['aiops_model']
+SPUG_AIOPS_JSON_MODE = _security['aiops_json_mode']
+SPUG_AIOPS_REQUEST_TIMEOUT = _security['aiops_request_timeout']
+SPUG_AIOPS_MAX_HOSTS = _security['aiops_max_hosts']
+SPUG_AIOPS_KNOWLEDGE_LIMIT = _security['aiops_knowledge_limit']
+SPUG_AIOPS_MAX_OUTPUT_TOKENS = _security['aiops_max_output_tokens']
+SPUG_AIOPS_RATE_LIMIT_PER_MINUTE = _security['aiops_rate_limit_per_minute']
+SPUG_AIOPS_MAX_RESPONSE_BYTES = _security['aiops_max_response_bytes']
 SPUG_GUACAMOLE_JSON_SECRET_KEY = _security['guacamole_json_secret_key']
 SPUG_GUACAMOLE_PUBLIC_URL = _security['guacamole_public_url']
 SPUG_REMOTE_TICKET_TTL = _security['remote_ticket_ttl']

@@ -14,6 +14,8 @@ import {
   DeploymentUnitOutlined,
   MonitorOutlined,
   AlertOutlined,
+  ReadOutlined,
+  RobotOutlined,
   SafetyCertificateOutlined,
   SettingOutlined
 } from '@ant-design/icons';
@@ -36,6 +38,8 @@ import MonitorIndex from './pages/monitor';
 import AlarmIndex from './pages/alarm/alarm';
 import AlarmGroup from './pages/alarm/group';
 import AlarmContact from './pages/alarm/contact';
+import KnowledgeIndex from './pages/knowledge';
+import AIOpsIndex from './pages/aiops';
 import SystemAccount from './pages/system/account';
 import SystemRole from './pages/system/role';
 import SystemSetting from './pages/system/setting';
@@ -90,6 +94,13 @@ export default [
       {title: '报警工作台', auth: 'alarm.alarm.view|alarm.event.view', path: '/alarm/alarm', component: AlarmIndex},
       {title: '报警联系人', auth: 'alarm.contact.view', path: '/alarm/contact', component: AlarmContact},
       {title: '报警联系组', auth: 'alarm.group.view', path: '/alarm/group', component: AlarmGroup},
+    ]
+  },
+  {
+    icon: <ReadOutlined/>, title: '知识与 AI',
+    auth: 'knowledge.space.view|knowledge.document.view|aiops.investigation.view', child: [
+      {title: '知识库', auth: 'knowledge.space.view|knowledge.document.view', path: '/knowledge', component: KnowledgeIndex},
+      {title: 'AI 运维', auth: 'aiops.investigation.view', path: '/aiops', component: AIOpsIndex, icon: <RobotOutlined/>},
     ]
   },
   {

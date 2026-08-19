@@ -1,0 +1,2 @@
+# False positive: test-only variable names adjacent to local Prometheus URLs.
+20659e3aa12eedf90d9605907d103c375646758e:spug_api/tests/test_observability.py:generic-api-key:34

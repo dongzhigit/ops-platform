@@ -31,6 +31,7 @@ class EnvSettingsTest(TestCase):
         self.assertEqual(result['secret_key'], 'development-secret')
         self.assertEqual(result['allowed_hosts'], ['127.0.0.1'])
         self.assertTrue(result['remote_gateway_enabled'])
+        self.assertFalse(result['aiops_enabled'])
         self.assertEqual(len(result['guacamole_json_secret_key']), 32)
 
     def test_production_requires_explicit_secret_and_hosts(self):
@@ -289,3 +290,49 @@ class EnvSettingsTest(TestCase):
         self.assertTrue(result['observability_enabled'])
         self.assertEqual(result['prometheus_discovery_token'], 'p' * 64)
         self.assertEqual(result['alertmanager_webhook_token'], 'w' * 64)
+
+    def test_production_aiops_requires_model_and_independent_key(self):
+        common = {
+            'SPUG_ENV': 'production',
+            'SPUG_SECRET_KEY': 'a-production-secret-with-32-characters',
+            'SPUG_CREDENTIAL_MASTER_KEY': MASTER_KEY,
+            'SPUG_AUDIT_SIGNING_KEY': AUDIT_KEY,
+            'SPUG_ALLOWED_HOSTS': 'ops.example.com',
+            'SPUG_AIOPS_ENABLED': 'true',
+            'SPUG_AIOPS_BASE_URL': 'https://model.example.com/v1',
+            'SPUG_AIOPS_MODEL': 'ops-model-v1',
+        }
+        with self.assertRaisesRegex(ValueError, 'SPUG_AIOPS_API_KEY'):
+            load_security_settings(
+                default_secret='development-secret',
+                default_debug=True,
+                default_allowed_hosts=['127.0.0.1'],
+                environ=common,
+            )
+        with self.assertRaisesRegex(ValueError, 'independent'):
+            load_security_settings(
+                default_secret='development-secret',
+                default_debug=True,
+                default_allowed_hosts=['127.0.0.1'],
+                environ=dict(common, SPUG_AIOPS_API_KEY=AUDIT_KEY),
+            )
+        with self.assertRaisesRegex(ValueError, 'HTTPS'):
+            load_security_settings(
+                default_secret='development-secret',
+                default_debug=True,
+                default_allowed_hosts=['127.0.0.1'],
+                environ=dict(
+                    common,
+                    SPUG_AIOPS_BASE_URL='http://model.example.com/v1',
+                    SPUG_AIOPS_API_KEY='independent-ai-provider-key',
+                ),
+            )
+        result = load_security_settings(
+            default_secret='development-secret',
+            default_debug=True,
+            default_allowed_hosts=['127.0.0.1'],
+            environ=dict(common, SPUG_AIOPS_API_KEY='independent-ai-provider-key'),
+        )
+        self.assertTrue(result['aiops_enabled'])
+        self.assertEqual(result['aiops_model'], 'ops-model-v1')
+        self.assertEqual(result['aiops_api_key'], 'independent-ai-provider-key')
