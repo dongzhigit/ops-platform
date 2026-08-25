@@ -231,7 +231,11 @@ networks:
   remote_gateway:
   observability:
     # No ports are published, but Prometheus needs egress to approved managed
-    # hosts. Restrict destination ranges with the host firewall.
+    # hosts. Use an explicit subnet to avoid overlapping a managed host or
+    # model service network. Restrict destination ranges with the host firewall.
+    ipam:
+      config:
+        - subnet: ${SPUG_OBSERVABILITY_SUBNET:-172.23.0.0/16}
 
 volumes:
   prometheus_data:

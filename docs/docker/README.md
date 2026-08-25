@@ -59,6 +59,7 @@ chmod 400 secrets/aiops_api_key
 - 外层反向代理必须关闭或脱敏 `/api/v1/gateway/sessions/*/launch/` 与 `/guacamole/` 的查询字符串日志。
 - Prometheus、Alertmanager 和 exporter 不应发布公网端口；限制监控网络只能访问批准的采集目标。
 - 限制 Spug 到模型服务的出站地址；模型接口不得回连资产网络，也不得复用应用、数据库或监控密钥。
+- `SPUG_OBSERVABILITY_SUBNET` 不得与主机、VPN、资产或模型服务网段重叠；修改后需重建 Compose 网络。
 - 若由外部代理完成 HTTPS 跳转，`SPUG_SSL_REDIRECT` 可保持 `false`，避免配置错误造成循环重定向。
 
 ## 权限说明
