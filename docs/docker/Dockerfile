@@ -2,11 +2,11 @@
 # platform instead of emulating the legacy linux/amd64 runtime on ARM hosts.
 FROM --platform=$BUILDPLATFORM node:22-bookworm-slim AS web-builder
 
-WORKDIR /build/spug_web
+WORKDIR /build/ops_web
 RUN corepack enable
-COPY spug_web/package.json spug_web/yarn.lock ./
+COPY ops_web/package.json ops_web/yarn.lock ./
 RUN yarn install --frozen-lockfile --non-interactive
-COPY spug_web/ ./
+COPY ops_web/ ./
 # react-scripts 3 uses webpack 4, which needs the legacy OpenSSL provider on
 # current Node releases. This affects only the build stage, not the runtime.
 RUN NODE_OPTIONS=--openssl-legacy-provider yarn build
@@ -51,18 +51,18 @@ RUN localedef -c -i en_US -f UTF-8 en_US.UTF-8
 ENV LANG=en_US.UTF-8
 ENV LC_ALL=en_US.UTF-8
 RUN echo -e '\n# Source definitions\n. /etc/profile\n' >> /root/.bashrc
-RUN mkdir -p /data/repos /data/spug/spug_api/logs /data/spug/spug_api/storage
-COPY spug_api/ /data/spug/spug_api/
-COPY --from=web-builder /build/spug_web/build/ /data/spug/spug_web/build/
-COPY docs/docker/init_spug /usr/bin/
+RUN mkdir -p /data/repos /data/ops-platform/ops_api/logs /data/ops-platform/ops_api/storage
+COPY ops_api/ /data/ops-platform/ops_api/
+COPY --from=web-builder /build/ops_web/build/ /data/ops-platform/ops_web/build/
+COPY docs/docker/init_ops_platform /usr/bin/
 COPY docs/docker/nginx.conf /etc/nginx/
 COPY docs/docker/ssh_config /etc/ssh/
-COPY docs/docker/spug.ini /etc/supervisord.d/
+COPY docs/docker/ops-platform.ini /etc/supervisord.d/
 COPY docs/docker/redis.conf /etc/
 COPY docs/docker/entrypoint.sh /
 
 ARG OPS_PLATFORM_VERSION=0.1.0-alpha.14
-LABEL org.opencontainers.image.title="Spug Ops Platform" \
+LABEL org.opencontainers.image.title="ops-platform" \
       org.opencontainers.image.version="${OPS_PLATFORM_VERSION}"
 ENV OPS_PLATFORM_VERSION=${OPS_PLATFORM_VERSION}
 

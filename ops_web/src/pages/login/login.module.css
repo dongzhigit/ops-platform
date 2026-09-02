@@ -1,0 +1,90 @@
+.container {
+    background:
+        linear-gradient(135deg, rgba(15, 118, 110, 0.12), rgba(245, 158, 11, 0.08) 42%, rgba(14, 165, 233, 0.10)),
+        #f8fafc;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+}
+
+.titleContainer {
+    padding-top: 76px;
+    text-align: center;
+    font-size: 33px;
+    font-weight: 600;
+}
+
+.titleContainer .logo {
+    width: 228px;
+    height: 44px;
+}
+
+.titleContainer .desc {
+    margin-top: 16px;
+    margin-bottom: 40px;
+    color: #475569;
+    font-size: 14px;
+    font-weight: 400;
+
+}
+
+.formContainer {
+    width: 368px;
+    margin: 0 auto;
+    flex: 1;
+    padding: 28px 28px 0;
+    border-top: 3px solid #0f766e;
+    background: rgba(255, 255, 255, 0.82);
+    box-shadow: 0 18px 45px rgba(15, 23, 42, 0.10);
+    height: 330px;
+    flex-grow: 0;
+}
+
+.formContainer .tabs {
+    margin-bottom: 10px;
+}
+
+.formContainer .formItem {
+    margin-bottom: 24px;
+}
+
+.formContainer .icon {
+    color: #64748b;
+    font-size: 14px;
+    margin-right: 4px;
+}
+
+.formContainer .button {
+    margin-top: 10px;
+    background: #0f766e;
+    border-color: #0f766e;
+}
+
+.formContainer .button:hover,
+.formContainer .button:focus {
+    background: #115e59;
+    border-color: #115e59;
+}
+
+.footerZone {
+    width: 100%;
+    bottom: 0;
+    padding: 20px;
+    font-size: 14px;
+    text-align: center;
+    display: flex;
+    flex-direction: column;
+    color: #64748b;
+}
+
+.footerZone .linksZone {
+    margin-bottom: 7px;
+}
+
+.footerZone .links {
+    margin-right: 40px;
+}
+
+.tips {
+    top: 230px
+}

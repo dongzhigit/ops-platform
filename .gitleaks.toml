@@ -4,6 +4,6 @@ useDefault = true
 [allowlist]
 description = "Ignore generated frontend dependencies and production bundles"
 paths = [
-  '''(^|/)spug_web/build/''',
-  '''(^|/)spug_web/node_modules/''',
+  '''(^|/)ops_web/build/''',
+  '''(^|/)ops_web/node_modules/''',
 ]

@@ -8,8 +8,8 @@ Last updated: 2026-08-25
 - Release: `ops-v0.1.0-alpha.14`
 - Baseline commit: `b1ff1e748a877158a498cf72b9b816a4cf7eebba`
 - Status: internal pre-release; do not describe it as production-ready.
-- Origin: secondary development of Spug with additional authorization,
-  security, remote access, observability, knowledge, and AI operations modules.
+- Origin: ops-platform with authorization, security, remote access,
+  observability, knowledge, and AI operations modules.
 
 ## Implemented scope
 
@@ -57,7 +57,7 @@ Last updated: 2026-08-25
 - Backend suite: 110 tests passed, 2 skipped before alpha.14 release.
 - React production build passed before alpha.14 release.
 - Windows Compose services verified healthy: MariaDB, Guacamole/guacd,
-  Prometheus, Alertmanager and Spug.
+  Prometheus, Alertmanager and ops-platform.
 - Supervisor processes verified running: API, WebSocket, Worker, Scheduler,
   Monitor, Redis and Nginx.
 - A real encrypted page configuration successfully called an OpenAI-compatible
@@ -66,7 +66,7 @@ Last updated: 2026-08-25
 ## Suggested next work
 
 1. Modernize the supported OS, Python and Django runtime with migration tests.
-2. Improve health checks so the Spug container fails health when core
+2. Improve health checks so the ops-platform container fails health when core
    Supervisor processes are not running, rather than checking Nginx alone.
 3. Add repeatable Windows and Linux acceptance scripts for RDP/VNC, monitoring,
    SFTP, notifications and AI provider compatibility.

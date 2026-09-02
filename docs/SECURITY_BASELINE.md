@@ -6,7 +6,7 @@
 
 M0 过渡镜像已经可以重复构建，但尚不满足正式生产发布条件。它可用于隔离内网中的兼容性验证，不应直接暴露到公网。
 
-Trivy 0.65.0 对 `spug-ops:0.1.0-alpha.13` 的严重和高危漏洞复扫结果如下。数量是漏洞在软件包中的出现次数，并非去重后的 CVE 数量；漏洞库更新后数字可能变化。“有修复版本”指 Trivy 状态为 `fixed` 且给出了修复版本的项目。
+Trivy 0.65.0 对 `ops-platform:0.1.0-alpha.13` 的严重和高危漏洞复扫结果如下。数量是漏洞在软件包中的出现次数，并非去重后的 CVE 数量；漏洞库更新后数字可能变化。“有修复版本”指 Trivy 状态为 `fixed` 且给出了修复版本的项目。
 
 | 层级 | 严重 | 高危 | 有修复版本 |
 | --- | ---: | ---: | ---: |
@@ -42,7 +42,7 @@ alpha.10 在固定旧版本的初次扫描中发现 Go 运行时严重漏洞，�
 
 - 环境安全配置、远程网关和可观测性单元/集成测试全部通过。
 - MariaDB 10.11 全量测试：109 项通过、2 项按外部环境条件跳过。除既有远程网关、文件、审计和监控安全场景外，新增覆盖知识空间角色、文档审批/版本恢复、固定引用、授权检索、AI 证据边界、引用校验、响应字段拒绝、并发锁、调用频率限制、页面模型配置安全，以及 OpenAI/Anthropic 请求、响应与 Token 用量映射。
-- Apache Guacamole 1.6.0 官方容器 JSON 认证集成测试通过：本项目生成的 HMAC-SHA256 + AES-128-CBC 密文直接和经 Spug Nginx 代理提交到 `/api/tokens` 均返回有效认证令牌。
+- Apache Guacamole 1.6.0 官方容器 JSON 认证集成测试通过：本项目生成的 HMAC-SHA256 + AES-128-CBC 密文直接和经 ops-platform Nginx 代理提交到 `/api/tokens` 均返回有效认证令牌。
 - 真实 OpenSSH SFTP 集成测试通过：除两文件并发分片、暂停恢复、损坏重试和取消清理外，还验证了 UTF-8 文件在线读取、审批保存、远端 SHA-256 以及 POSIX mode/UID/GID 保留。
 - React 生产构建通过；RDP/VNC 入口、端点配置以及既有安全中心、SFTP 和审批界面均已纳入最终镜像构建产物。
 - React 生产构建还包含主机指标总览、1/6/24 小时趋势、采集目标配置和指标告警工作台。
@@ -80,5 +80,5 @@ Guacamole Web 的 Java 依赖扫描需要额外下载约 908 MiB 的 Trivy Java 
 复扫示例：
 
 ```bash
-trivy image --scanners vuln --severity CRITICAL,HIGH spug-ops:0.1.0-alpha.13
+trivy image --scanners vuln --severity CRITICAL,HIGH ops-platform:0.1.0-alpha.13
 ```

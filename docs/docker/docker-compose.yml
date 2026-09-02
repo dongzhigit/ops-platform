@@ -1,9 +1,9 @@
-name: spug-ops
+name: ops-platform
 
 services:
   db:
     image: mariadb:10.11
-    container_name: spug-db
+    container_name: ops-platform-db
     restart: unless-stopped
     command:
       - --character-set-server=utf8mb4
@@ -11,8 +11,8 @@ services:
     volumes:
       - ${SPUG_DATA_ROOT:-./data}/mysql:/var/lib/mysql
     environment:
-      MYSQL_DATABASE: ${MYSQL_DATABASE:-spug}
-      MYSQL_USER: ${MYSQL_USER:-spug}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-ops_platform}
+      MYSQL_USER: ${MYSQL_USER:-ops_platform}
       MYSQL_PASSWORD: ${MYSQL_PASSWORD:?MYSQL_PASSWORD is required}
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD is required}
     healthcheck:
@@ -26,7 +26,7 @@ services:
 
   guacd:
     image: guacamole/guacd:1.6.0
-    container_name: spug-guacd
+    container_name: ops-platform-guacd
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -41,7 +41,7 @@ services:
 
   guacamole:
     image: guacamole/guacamole:1.6.0
-    container_name: spug-guacamole
+    container_name: ops-platform-guacamole
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -51,7 +51,7 @@ services:
       JSON_ENABLED: "true"
       JSON_SECRET_KEY: ${SPUG_GUACAMOLE_JSON_SECRET_KEY:?SPUG_GUACAMOLE_JSON_SECRET_KEY is required}
       # Preserve real client IPs so Guacamole's built-in ban extension does
-      # not treat every user behind the Spug proxy as one shared address.
+      # not treat every user behind the ops-platform proxy as one shared address.
       REMOTE_IP_VALVE_ENABLED: "true"
       REMOTE_IP_VALVE_REMOTE_IP_HEADER: X-Forwarded-For
       REMOTE_IP_VALVE_PROTOCOL_HEADER: X-Forwarded-Proto
@@ -70,7 +70,7 @@ services:
 
   alertmanager:
     image: prom/alertmanager:v0.34.0
-    container_name: spug-alertmanager
+    container_name: ops-platform-alertmanager
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -92,7 +92,7 @@ services:
 
   prometheus:
     image: prom/prometheus:v3.14.0
-    container_name: spug-prometheus
+    container_name: ops-platform-prometheus
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -119,7 +119,7 @@ services:
 
   node-exporter:
     image: prom/node-exporter:v1.12.1
-    container_name: spug-node-exporter
+    container_name: ops-platform-node-exporter
     restart: unless-stopped
     pid: host
     security_opt:
@@ -136,7 +136,7 @@ services:
     networks:
       - observability
 
-  spug:
+  ops-platform:
     # The legacy M0 image currently depends on CentOS 7 x86_64 packages.
     platform: ${SPUG_PLATFORM:-linux/amd64}
     build:
@@ -144,8 +144,8 @@ services:
       # and web sources instead of downloading an upstream release at runtime.
       context: ../..
       dockerfile: docs/docker/Dockerfile
-    image: ${SPUG_IMAGE:-spug-ops:local}
-    container_name: spug
+    image: ${SPUG_IMAGE:-ops-platform:local}
+    container_name: ops-platform
     restart: unless-stopped
     init: true
     cap_add:
@@ -156,12 +156,12 @@ services:
     security_opt:
       - apparmor:unconfined
     volumes:
-      - ${SPUG_DATA_ROOT:-./data}/service/logs:/data/spug/spug_api/logs
-      - ${SPUG_DATA_ROOT:-./data}/service/storage:/data/spug/spug_api/storage
+      - ${SPUG_DATA_ROOT:-./data}/service/logs:/data/ops-platform/ops_api/logs
+      - ${SPUG_DATA_ROOT:-./data}/service/storage:/data/ops-platform/ops_api/storage
       - ${SPUG_DATA_ROOT:-./data}/repos:/data/repos
       - ${SPUG_OBSERVABILITY_SECRETS_ROOT:-./secrets}/prometheus_discovery_token:/run/secrets/prometheus_discovery_token:ro
       - ${SPUG_OBSERVABILITY_SECRETS_ROOT:-./secrets}/alertmanager_webhook_token:/run/secrets/alertmanager_webhook_token:ro
-      - ${SPUG_SECRETS_ROOT:-./secrets}:/run/spug-secrets:ro
+      - ${SPUG_SECRETS_ROOT:-./secrets}:/run/ops-platform-secrets:ro
     ports:
       # Keep the service private by default. Put a TLS reverse proxy in front
       # or explicitly change SPUG_BIND_HOST for a trusted network.
@@ -201,8 +201,8 @@ services:
       SPUG_CSRF_TRUSTED_ORIGINS: ${SPUG_CSRF_TRUSTED_ORIGINS:-}
       SPUG_SECURE_COOKIES: ${SPUG_SECURE_COOKIES:-true}
       SPUG_SSL_REDIRECT: ${SPUG_SSL_REDIRECT:-false}
-      MYSQL_DATABASE: ${MYSQL_DATABASE:-spug}
-      MYSQL_USER: ${MYSQL_USER:-spug}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-ops_platform}
+      MYSQL_USER: ${MYSQL_USER:-ops_platform}
       MYSQL_PASSWORD: ${MYSQL_PASSWORD:?MYSQL_PASSWORD is required}
       MYSQL_HOST: db
       MYSQL_PORT: 3306

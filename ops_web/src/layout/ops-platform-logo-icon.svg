@@ -1,0 +1,8 @@
+<svg width="192" height="192" viewBox="0 0 192 192" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <title>ops-platform</title>
+  <rect x="16" y="16" width="160" height="160" rx="32" fill="#0F766E"/>
+  <rect x="16" y="16" width="160" height="160" rx="32" stroke="#115E59" stroke-width="8"/>
+  <path d="M58 102L88 132L138 58" stroke="#F8FAFC" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="63" cy="60" r="15" fill="#F59E0B"/>
+  <circle cx="135" cy="132" r="15" fill="#38BDF8"/>
+</svg>

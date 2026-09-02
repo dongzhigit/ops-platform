@@ -11,10 +11,10 @@ alerting:
         - targets: ["alertmanager:9093"]
 
 scrape_configs:
-  - job_name: spug-node
+  - job_name: ops-platform-node
     honor_labels: false
     http_sd_configs:
-      - url: http://spug/api/v1/observability/discovery/targets/
+      - url: http://ops-platform/api/v1/observability/discovery/targets/
         refresh_interval: 30s
         authorization:
           type: Bearer

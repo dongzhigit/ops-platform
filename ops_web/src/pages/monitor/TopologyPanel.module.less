@@ -1,0 +1,301 @@
+.toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 72px;
+  padding: 14px 18px;
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+}
+
+.stats {
+  :global(.ant-statistic) {
+    min-width: 72px;
+  }
+
+  :global(.ant-statistic-title) {
+    color: #64748b;
+    font-size: 12px;
+  }
+
+  :global(.ant-statistic-content) {
+    color: #0f172a;
+    font-size: 20px;
+  }
+}
+
+.workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 320px;
+  gap: 16px;
+  align-items: stretch;
+}
+
+.canvasWrap {
+  min-height: 380px;
+  overflow: auto;
+  background: #f8fafc;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+}
+
+.canvas {
+  position: relative;
+  min-width: 100%;
+}
+
+.columnTitle {
+  position: absolute;
+  z-index: 2;
+  top: 18px;
+  width: 236px;
+  color: #475569;
+  font-weight: 600;
+}
+
+.edges {
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.edge {
+  fill: none;
+  stroke: #94a3b8;
+  stroke-width: 3;
+  stroke-linecap: round;
+  opacity: 0.95;
+}
+
+.edge.healthy {
+  stroke: #0f766e;
+}
+
+.edge.warning {
+  stroke: #f59e0b;
+}
+
+.edge.info {
+  stroke: #0ea5e9;
+}
+
+.edge.critical,
+.edge.offline {
+  stroke: #ef4444;
+}
+
+.edge.disabled,
+.edge.unknown {
+  stroke: #64748b;
+}
+
+.dashed {
+  stroke-dasharray: 7 5;
+}
+
+.arrow {
+  fill: #94a3b8;
+}
+
+.edgeLabel {
+  fill: #64748b;
+  font-size: 12px;
+  paint-order: stroke;
+  stroke: #f8fafc;
+  stroke-width: 4px;
+  stroke-linejoin: round;
+}
+
+.node {
+  position: absolute;
+  z-index: 3;
+  width: 236px;
+  height: 74px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  overflow: hidden;
+  text-align: left;
+  background: #ffffff;
+  border: 1px solid #dbe4ea;
+  border-left: 4px solid #94a3b8;
+  border-radius: 6px;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
+  cursor: pointer;
+}
+
+.node:hover,
+.selected {
+  border-color: #0f766e;
+  box-shadow: 0 12px 26px rgba(15, 118, 110, 0.16);
+}
+
+.nodeIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 32px;
+  height: 32px;
+  color: #0f766e;
+  background: #ccfbf1;
+  border-radius: 6px;
+  font-size: 18px;
+}
+
+.nodeBody {
+  min-width: 0;
+  flex: 1;
+}
+
+.nodeTitle,
+.nodeMeta {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nodeTitle {
+  color: #0f172a;
+  font-weight: 600;
+}
+
+.nodeMeta {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.nodeStatus {
+  flex: 0 0 auto;
+  margin-right: 0;
+}
+
+.healthy {
+  border-left-color: #0f766e;
+}
+
+.warning {
+  border-left-color: #f59e0b;
+}
+
+.critical,
+.offline {
+  border-left-color: #ef4444;
+}
+
+.disabled,
+.unknown {
+  border-left-color: #cbd5e1;
+}
+
+.service .nodeIcon {
+  color: #0369a1;
+  background: #e0f2fe;
+}
+
+.app .nodeIcon {
+  color: #92400e;
+  background: #fef3c7;
+}
+
+.host .nodeIcon {
+  color: #475569;
+  background: #e2e8f0;
+}
+
+.detail {
+  min-height: 380px;
+  padding: 18px;
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+}
+
+.detailTitle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: #0f172a;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.detailMeta {
+  margin-top: 6px;
+  color: #64748b;
+  word-break: break-all;
+}
+
+.metricGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 20px;
+}
+
+.metricGrid :global(.ant-statistic-title) {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.metricGrid :global(.ant-statistic-content) {
+  font-size: 18px;
+}
+
+.sectionTitle {
+  margin: 20px 0 10px;
+  color: #334155;
+  font-weight: 600;
+}
+
+.emptyText {
+  color: #94a3b8;
+}
+
+.hints {
+  margin-top: 18px;
+  color: #475569;
+  line-height: 1.7;
+}
+
+.connectionRow {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr) 64px;
+  gap: 8px;
+  align-items: center;
+  min-height: 32px;
+  color: #475569;
+  border-bottom: 1px solid #f1f5f9;
+}
+
+.connectionRow b {
+  min-width: 0;
+  overflow: hidden;
+  color: #0f172a;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 1100px) {
+  .toolbar,
+  .workspace {
+    display: block;
+  }
+
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(64px, 1fr));
+    margin-top: 12px;
+  }
+
+  .detail {
+    margin-top: 16px;
+  }
+}

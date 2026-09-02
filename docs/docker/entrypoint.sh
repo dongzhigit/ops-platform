@@ -72,7 +72,7 @@ if [ -e /root/.bashrc ]; then
     set -u
 fi
 
-cat > /data/spug/spug_api/spug/overrides.py << 'PYTHON'
+cat > /data/ops-platform/ops_api/ops_platform/overrides.py << 'PYTHON'
 import os
 
 
@@ -112,7 +112,7 @@ DATABASES = {
 }
 PYTHON
 
-cd /data/spug/spug_api
+cd /data/ops-platform/ops_api
 python3 manage.py updatedb
 
 exec supervisord -c /etc/supervisord.conf

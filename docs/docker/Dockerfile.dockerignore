@@ -5,7 +5,7 @@
 **/*.pyc
 docs/docker/.env
 docs/docker/data
-spug_api/logs
-spug_api/storage
-spug_web/build
-spug_web/node_modules
+ops_api/logs
+ops_api/storage
+ops_web/build
+ops_web/node_modules

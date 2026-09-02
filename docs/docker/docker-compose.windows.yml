@@ -33,7 +33,7 @@ services:
     profiles:
       - linux-host-monitoring
 
-  spug:
+  ops-platform:
     container_name: !reset null
     cap_add: !reset []
     devices: !reset []

@@ -2,9 +2,9 @@
 
 ## Start here
 
-- This repository is a security-focused secondary development fork of Spug,
-  not a greenfield rewrite. Preserve upstream behavior unless a requirement or
-  documented security boundary explicitly changes it.
+- This repository is the security-focused ops-platform codebase. Preserve
+  existing behavior unless a requirement or documented security boundary
+  explicitly changes it.
 - Read `docs/PROJECT_STATUS.md` before starting a new task. Then read only the
   milestone document relevant to the area being changed.
 - Never put passwords, API keys, credential master keys, deployment `.env`
@@ -12,9 +12,9 @@
 
 ## Architecture and routing
 
-- `spug_api/`: Django 2.2 / Python 3.6 legacy backend. Keep compatibility with
+- `ops_api/`: Django 2.2 / Python 3.6 legacy backend. Keep compatibility with
   the pinned runtime until the platform-upgrade milestone is explicitly taken.
-- `spug_web/`: React frontend built with `react-app-rewired` and Yarn.
+- `ops_web/`: React frontend built with `react-app-rewired` and Yarn.
 - `docs/docker/`: immutable application image and Compose deployment baseline.
 - `docs/M1_ASSET_ACCESS.md`: assets, credentials, identities, authorization.
 - `docs/M1_APPROVAL_AUDIT.md`: approvals and tamper-evident audit behavior.
@@ -42,8 +42,8 @@
 
 ## Verification
 
-- Backend: `python3 spug_api/manage.py test`
-- Frontend: `cd spug_web && yarn install --frozen-lockfile && yarn build`
+- Backend: `python3 ops_api/manage.py test`
+- Frontend: `cd ops_web && yarn install --frozen-lockfile && yarn build`
 - Compose baseline: from `docs/docker`, run
   `docker compose -f docker-compose.yml -f docker-compose.windows.yml config --quiet`
   for Windows Docker Desktop, or `docker compose config --quiet` on Linux.

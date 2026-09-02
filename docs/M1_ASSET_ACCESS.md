@@ -47,19 +47,19 @@
 先备份数据库和主密钥，再执行预检查：
 
 ```bash
-docker exec spug python3 /data/spug/spug_api/manage.py migrate_host_credentials
+docker exec ops-platform python3 /data/ops-platform/ops_api/manage.py migrate_host_credentials
 ```
 
 执行迁移但保留 `hosts.pkey` 回滚窗口：
 
 ```bash
-docker exec spug python3 /data/spug/spug_api/manage.py migrate_host_credentials --execute
+docker exec ops-platform python3 /data/ops-platform/ops_api/manage.py migrate_host_credentials --execute
 ```
 
 确认所有主机连接正常后，回读验证并清除旧明文：
 
 ```bash
-docker exec spug python3 /data/spug/spug_api/manage.py migrate_host_credentials --execute --clear-legacy
+docker exec ops-platform python3 /data/ops-platform/ops_api/manage.py migrate_host_credentials --execute --clear-legacy
 ```
 
 命令具有幂等检查，已存在默认托管身份的主机会跳过。`--clear-legacy` 只会在新密文回读内容与旧私钥一致后清除旧字段。
@@ -83,8 +83,8 @@ docker exec spug python3 /data/spug/spug_api/manage.py migrate_host_credentials 
 5. 先预检查，再执行逐条重新加密和回读验证。该命令同时覆盖资产凭据和 AI 运维页面保存的模型 API Key：
 
    ```bash
-   docker exec spug python3 /data/spug/spug_api/manage.py rotate_credential_master_key --target-key-id v2
-   docker exec spug python3 /data/spug/spug_api/manage.py rotate_credential_master_key --target-key-id v2 --execute
+   docker exec ops-platform python3 /data/ops-platform/ops_api/manage.py rotate_credential_master_key --target-key-id v2
+   docker exec ops-platform python3 /data/ops-platform/ops_api/manage.py rotate_credential_master_key --target-key-id v2 --execute
    ```
 
 6. 查询数据库确认没有旧 key ID 后，才可在下一维护窗口把 `SPUG_CREDENTIAL_MASTER_KEY` 替换为新密钥；保留 keyring 中的 `v2` 映射和 `SPUG_CREDENTIAL_PRIMARY_KEY_ID=v2`。若轮换失败，事务会整体回滚，旧密钥必须继续保留。
@@ -98,4 +98,4 @@ docker exec spug python3 /data/spug/spug_api/manage.py migrate_host_credentials 
 1. `makemigrations --check --dry-run`，发现模型漂移就失败关闭；
 2. `migrate --noinput`，应用仓库中已经评审的迁移。
 
-已有 Spug 数据库通常已记录各应用的 `0001_initial`，升级时新增的 `assets.0001_initial` 会单独应用。正式升级前仍必须在数据库副本上演练，并验证迁移记录与实际表结构一致。
+已有 ops-platform 数据库通常已记录各应用的 `0001_initial`，升级时新增的 `assets.0001_initial` 会单独应用。正式升级前仍必须在数据库副本上演练，并验证迁移记录与实际表结构一致。

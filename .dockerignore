@@ -6,13 +6,13 @@
 **/__pycache__
 **/*.py[cod]
 
-spug_web/node_modules
-spug_web/build
-spug_web/coverage
+ops_web/node_modules
+ops_web/build
+ops_web/coverage
 
-spug_api/db.sqlite3
-spug_api/logs
-spug_api/storage
+ops_api/db.sqlite3
+ops_api/logs
+ops_api/storage
 
 docs/docker/.env
 docs/docker/data

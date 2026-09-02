@@ -2,7 +2,7 @@
 
 ## 1. 决策摘要
 
-- 建设方式：基于现有 Spug 3.0 二次开发，保留已有数据与运维能力，不从零重写。
+- 建设方式：基于现有 ops-platform，保留已有数据与运维能力。
 - 交付方式：分阶段交付，先形成可投入内部使用的 MVP，再扩展 RDP/VNC、完整可观测性和 AI 执行闭环。
 - 验收方式：自动化测试、安全检查和部署验收必须同时通过。
 - 部署假设：私有化部署、安全优先、先支持单集群 Docker Compose，后续兼容 Kubernetes 和高可用部署。
@@ -24,7 +24,7 @@
 
 ## 2. 现有能力与缺口
 
-| 领域 | 现有 Spug 能力 | 建设目标 |
+| 领域 | 现有 ops-platform 能力 | 建设目标 |
 | --- | --- | --- |
 | 资产管理 | 主机、树形主机组、基础主机信息 | 统一资产、凭据、身份、标签、授权和生命周期 |
 | 在线终端 | 浏览器 SSH、xterm.js、SFTP | SSH/RDP/VNC 统一入口、会话录像、命令审计、主题与快捷键 |
@@ -72,7 +72,7 @@ flowchart LR
 
 ### 3.1 组件边界
 
-1. Spug Core
+1. ops-platform Core
    - 继续承担用户、主机、任务、发布、配置、通知和 WebSocket 基础能力。
    - 保持现有 API 可用，新增接口统一放在 `/api/v1/`。
 
@@ -86,7 +86,7 @@ flowchart LR
 
 4. 可观测性
    - Prometheus 保存主机和探测指标，Alertmanager 负责告警路由。
-   - Spug 保存监控策略、资产关联、告警事件、认领状态和通知记录，不重复实现时序数据库。
+   - ops-platform 保存监控策略、资产关联、告警事件、认领状态和通知记录，不重复实现时序数据库。
 
 5. 知识库与 AI
    - 知识库存储运维文档、Runbook、故障复盘和资产说明。
@@ -196,7 +196,7 @@ flowchart LR
 - 建立知识空间、Markdown 文档和 Runbook。
 - AI 提供只读告警摘要、指标解释、知识检索和处置建议，不允许执行。
 
-验收：不同角色和资产范围不能越权；凭据不以明文落库或返回前端；关键操作可从审计日志完整还原；现有 Spug 核心流程兼容。
+验收：不同角色和资产范围不能越权；凭据不以明文落库或返回前端；关键操作可从审计日志完整还原；现有核心流程兼容。
 
 当前进度：已完成资产凭据/身份/绑定/对象授权链路，SSH/SFTP、批量、计划、监控和发布的执行前授权，高风险操作双人审批、一次性批准票据、关联 ID、HMAC 审计链，以及 RDP/VNC、Prometheus/Alertmanager 监控闭环、知识空间/版本/检索和默认只读 AI 调查。AI 仅能基于授权证据生成带引用的诊断与不可执行方案；任务证据、配置中心增强、远程会话录像和 AI 写操作审批执行闭环仍待后续实现。实现说明见 [M1 资产、凭据与对象授权](M1_ASSET_ACCESS.md)、[M4 主机监控与告警闭环](M4_OBSERVABILITY.md) 和 [M5 知识库与只读 AI 运维](M5_KNOWLEDGE_AIOPS.md)。
 
@@ -207,7 +207,7 @@ flowchart LR
 - SFTP 增加分片、断点续传、SHA-256 校验、批量队列、冲突策略和在线编辑锁。
 - 快捷命令、自定义快捷键和主题按用户保存。
 
-当前进度：SFTP 上传已完成持久化单文件会话和最多 50 个文件的批次队列、4 MiB 浏览器分片、2 路受控文件并发、暂停/恢复/失败清理后重试/取消，以及 24 小时内断点续传、分片与远端整文件 SHA-256 校验和安全覆盖；下载已支持单段 HTTP Range、HEAD、`If-Range`、中断审计和文件列表多选下载入口。在线编辑已支持最大 2 MiB 的 UTF-8 普通文件、30 分钟持久化独占锁、5 分钟心跳、精确审批绑定、ETag/SHA-256 乐观冲突检测、元数据保留和 Scheduler 清理。Guacamole 1.6.0 已提供 RDP/VNC 端点、浏览器入口、一次性 Spug 启动票据、二次授权、短时加密 JSON 和会话元数据审计；Guacamole 侧加密数据在短 TTL 内仍可重放，真实连接/断开回调、强制断开和会话录像尚未完成。实现说明见 [M2 SFTP 续传与清理](M2_RESUMABLE_SFTP.md) 和 [M3 RDP/VNC 安全接入](M3_REMOTE_DESKTOP.md)。
+当前进度：SFTP 上传已完成持久化单文件会话和最多 50 个文件的批次队列、4 MiB 浏览器分片、2 路受控文件并发、暂停/恢复/失败清理后重试/取消，以及 24 小时内断点续传、分片与远端整文件 SHA-256 校验和安全覆盖；下载已支持单段 HTTP Range、HEAD、`If-Range`、中断审计和文件列表多选下载入口。在线编辑已支持最大 2 MiB 的 UTF-8 普通文件、30 分钟持久化独占锁、5 分钟心跳、精确审批绑定、ETag/SHA-256 乐观冲突检测、元数据保留和 Scheduler 清理。Guacamole 1.6.0 已提供 RDP/VNC 端点、浏览器入口、一次性 ops-platform 启动票据、二次授权、短时加密 JSON 和会话元数据审计；Guacamole 侧加密数据在短 TTL 内仍可重放，真实连接/断开回调、强制断开和会话录像尚未完成。实现说明见 [M2 SFTP 续传与清理](M2_RESUMABLE_SFTP.md) 和 [M3 RDP/VNC 安全接入](M3_REMOTE_DESKTOP.md)。
 
 验收：浏览器不接触长期凭据；连接过期自动失效；大文件中断后可续传；录像只对授权审计员可见。
 
@@ -233,21 +233,21 @@ flowchart LR
 
 后端建议新增：
 
-- `spug_api/apps/assets/`：资产、凭据、身份、授权策略。
-- `spug_api/apps/audit/`：审批、审计、终端会话和执行证据。
-- `spug_api/apps/knowledge/`：知识空间、文档和 Runbook。
-- `spug_api/apps/aiops/`：调查、计划、工具权限和执行编排。
-- `spug_api/apps/observability/`：Prometheus/Alertmanager 适配和告警事件。
-- `spug_api/apps/gateway/`：Guacamole 短时票据和会话生命周期。
+- `ops_api/apps/assets/`：资产、凭据、身份、授权策略。
+- `ops_api/apps/audit/`：审批、审计、终端会话和执行证据。
+- `ops_api/apps/knowledge/`：知识空间、文档和 Runbook。
+- `ops_api/apps/aiops/`：调查、计划、工具权限和执行编排。
+- `ops_api/apps/observability/`：Prometheus/Alertmanager 适配和告警事件。
+- `ops_api/apps/gateway/`：Guacamole 短时票据和会话生命周期。
 
 前端建议新增：
 
-- `spug_web/src/pages/assets/`
-- `spug_web/src/pages/operations/`
-- `spug_web/src/pages/observability/`
-- `spug_web/src/pages/knowledge/`
-- `spug_web/src/pages/aiops/`
-- `spug_web/src/pages/security/`
+- `ops_web/src/pages/assets/`
+- `ops_web/src/pages/operations/`
+- `ops_web/src/pages/observability/`
+- `ops_web/src/pages/knowledge/`
+- `ops_web/src/pages/aiops/`
+- `ops_web/src/pages/security/`
 
 接口统一采用 `/api/v1/`，新增对象使用 UUID，对外响应包含 `request_id`，异步执行返回可查询的任务 ID。
 
