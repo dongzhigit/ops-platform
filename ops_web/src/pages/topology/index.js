@@ -211,6 +211,14 @@ function getRuntimeHostId(node) {
 }
 
 
+function getBusinessTargetHostId(node) {
+  if (!node) return null;
+  const metadata = node.metadata || {};
+  if (metadata.remote_host_id) return String(metadata.remote_host_id);
+  return getRuntimeHostId(node);
+}
+
+
 function getHostNodeById(nodes) {
   const result = {};
   (nodes || []).forEach(node => {
@@ -219,47 +227,6 @@ function getHostNodeById(nodes) {
     }
   });
   return result;
-}
-
-
-function endpointAddress(node) {
-  const metadata = node && node.metadata ? node.metadata : {};
-  if (metadata.address) return String(metadata.address);
-  return (node && node.name ? node.name : 'external').split(':')[0];
-}
-
-
-function isApplicationEndpoint(node) {
-  const metadata = node && node.metadata ? node.metadata : {};
-  return node && node.type === 'port' && (
-    metadata.connection_kind === 'application' ||
-    ['frontend', 'backend', 'application'].includes(metadata.runtime_layer)
-  );
-}
-
-
-function isDependencyEndpoint(node) {
-  const metadata = node && node.metadata ? node.metadata : {};
-  return node && node.type === 'port' &&
-    metadata.connection_kind === 'dependency' &&
-    ['database', 'middleware'].includes(metadata.runtime_layer);
-}
-
-
-function syntheticNode(id, type, name, status, metadata = {}) {
-  return {
-    id,
-    key: id,
-    type,
-    name,
-    description: metadata.description || '',
-    source: {type: 'summary', id},
-    status,
-    status_source: metadata.status_source || 'runtime',
-    metadata,
-    position: {},
-    is_active: true,
-  };
 }
 
 
@@ -309,99 +276,42 @@ function buildServerGraph(nodes, edges) {
   const resultEdges = [];
 
   activeNodes.forEach(node => {
-    if (node.type === 'host' || node.type === 'monitor_target') {
+    if (node.type === 'host' && node.source && node.source.type === 'host') {
       resultNodes[node.id] = node;
     }
   });
 
   activeEdges.forEach(edge => {
+    if (edge.type !== 'calls') return;
     const source = activeNodes.find(item => item.id === edge.source);
     const target = activeNodes.find(item => item.id === edge.target);
     if (!source || !target) return;
-    if (edge.type === 'collects' && resultNodes[edge.source] && resultNodes[edge.target]) {
-      resultEdges.push(edge);
-      return;
-    }
-    if (edge.type === 'listens_on' && isDependencyEndpoint(target)) {
-      const sourceHostId = getRuntimeHostId(source);
-      const sourceHost = hostBySourceId[sourceHostId];
-      if (!sourceHost) return;
-      const metadata = target.metadata || {};
-      const nodeType = metadata.runtime_layer || target.type;
-      const serviceId = `summary:${nodeType}:${target.id}`;
-      if (!resultNodes[serviceId]) {
-        resultNodes[serviceId] = syntheticNode(
-          serviceId,
-          nodeType,
-          target.name || metadata.service || 'service',
-          target.status || 'unknown',
-          {
-            host_id: sourceHostId,
-            service: metadata.service,
-            port: metadata.port,
-            protocol: metadata.protocol,
-            description: target.description || '运行态监听服务',
-          },
-        );
-      }
-      resultEdges.push(syntheticEdge(
-        `summary:${edge.id}:listener`,
-        sourceHost.id,
-        serviceId,
-        'listens_on',
-        edge.label || target.name,
-        edge.status,
-        {source_edge: edge.id, status_source: edge.status_source, probed: edge.probed},
-      ));
-      return;
-    }
-    if (edge.type !== 'calls') return;
     const sourceHostId = getRuntimeHostId(source);
     const sourceHost = hostBySourceId[sourceHostId];
     if (!sourceHost) return;
-    const targetHostId = getRuntimeHostId(target);
+    const targetHostId = getBusinessTargetHostId(target);
     const targetHost = targetHostId && hostBySourceId[targetHostId];
-    if (targetHost && targetHost.id !== sourceHost.id) {
-      resultEdges.push(syntheticEdge(
-        `summary:${edge.id}:host`,
-        sourceHost.id,
-        targetHost.id,
-        'calls',
-        edge.label,
-        edge.status,
-        {source_edge: edge.id, status_source: edge.status_source, probed: edge.probed},
-      ));
-      return;
-    }
-    if (['database', 'middleware'].includes(target.type) || isApplicationEndpoint(target)) {
-      const address = endpointAddress(target);
-      const nodeType = isApplicationEndpoint(target) ? 'port' : target.type;
-      const dependencyId = `summary:${nodeType}:${address}`;
-      if (!resultNodes[dependencyId]) {
-        resultNodes[dependencyId] = syntheticNode(
-          dependencyId,
-          nodeType,
-          target.name || address,
-          target.status || 'unknown',
-          {address, description: target.description || '运行态依赖聚合'},
-        );
-      }
-      resultEdges.push(syntheticEdge(
-        `summary:${edge.id}:dependency`,
-        sourceHost.id,
-        dependencyId,
-        'calls',
-        edge.label,
-        edge.status,
-        {source_edge: edge.id, status_source: edge.status_source, probed: edge.probed},
-      ));
-    }
+    if (!targetHost || targetHost.id === sourceHost.id) return;
+    resultEdges.push(syntheticEdge(
+      `summary:${edge.id}:host`,
+      sourceHost.id,
+      targetHost.id,
+      'calls',
+      edge.label,
+      edge.status,
+      {
+        source_edge: edge.id,
+        status_source: edge.status_source,
+        probed: edge.probed,
+        service_label: edge.label,
+      },
+    ));
   });
 
   return {
     nodes: Object.values(resultNodes),
     edges: summarizeEdges(resultEdges),
-    order: ['host', 'port', 'database', 'middleware', 'monitor_target'],
+    order: ['host'],
   };
 }
 
@@ -411,13 +321,22 @@ function buildRuntimeGraph(nodes, edges, selectedHostId) {
   const activeEdges = (edges || []).filter(item => item.is_active);
   const hostBySourceId = getHostNodeById(activeNodes);
   const hostNode = selectedHostId ? hostBySourceId[String(selectedHostId)] : null;
-  if (!hostNode) return {nodes: [], edges: [], order: ['host', 'process', 'port', 'database', 'middleware']};
+  if (!hostNode) return {nodes: [], edges: [], order: ['process', 'port', 'database', 'middleware', 'external', 'host']};
 
   const nodeMap = {};
+  function addServiceNode(node, fallbackHost = false) {
+    if (!node) return;
+    if (node.type === 'monitor_target') return;
+    if (node.type === 'host' && !fallbackHost) return;
+    nodeMap[node.id] = node;
+  }
+
   activeNodes.forEach(node => {
-    if (node.id === hostNode.id) nodeMap[node.id] = node;
-    else if (getRuntimeHostId(node) === String(selectedHostId) && ['process', 'port', 'database', 'middleware'].includes(node.type)) {
-      if (node.type !== 'process') nodeMap[node.id] = node;
+    if (
+      getRuntimeHostId(node) === String(selectedHostId) &&
+      ['port', 'database', 'middleware', 'external'].includes(node.type)
+    ) {
+      addServiceNode(node);
     }
   });
 
@@ -429,16 +348,21 @@ function buildRuntimeGraph(nodes, edges, selectedHostId) {
     if (!source || !target) return;
     const sourceHost = getRuntimeHostId(source);
     const targetHost = getRuntimeHostId(target);
-    if (sourceHost !== String(selectedHostId) && targetHost !== String(selectedHostId)) return;
-    if (source.type === 'process') nodeMap[source.id] = source;
-    if (target.type === 'process') nodeMap[target.id] = target;
+    const targetBusinessHost = getBusinessTargetHostId(target);
+    if (
+      sourceHost !== String(selectedHostId) &&
+      targetHost !== String(selectedHostId) &&
+      targetBusinessHost !== String(selectedHostId)
+    ) return;
+    addServiceNode(source, edge.type === 'calls');
+    addServiceNode(target, edge.type === 'calls');
     if (nodeMap[source.id] && nodeMap[target.id]) runtimeEdges.push(edge);
   });
 
   return {
     nodes: Object.values(nodeMap),
     edges: runtimeEdges,
-    order: ['host', 'process', 'port', 'database', 'middleware'],
+    order: ['process', 'port', 'database', 'middleware', 'external', 'host'],
   };
 }
 
@@ -673,6 +597,9 @@ function RuntimeDetail({node}) {
     <Descriptions size="small" column={1}>
       <Descriptions.Item label="采集时间">{metadata.observed_at || '--'}</Descriptions.Item>
       {metadata.role && <Descriptions.Item label="类型">{metadata.role}</Descriptions.Item>}
+      {metadata.service && <Descriptions.Item label="服务">{metadata.service}</Descriptions.Item>}
+      {metadata.framework && <Descriptions.Item label="框架">{metadata.framework}</Descriptions.Item>}
+      {metadata.detected_by && <Descriptions.Item label="识别方式">{metadata.detected_by}</Descriptions.Item>}
       {metadata.process_name && <Descriptions.Item label="进程">{metadata.process_name}</Descriptions.Item>}
       {metadata.pid && <Descriptions.Item label="PID">{metadata.pid}</Descriptions.Item>}
       {metadata.ppid && <Descriptions.Item label="PPID">{metadata.ppid}</Descriptions.Item>}
@@ -745,6 +672,7 @@ function RuntimeDiscoveryPreview({results, onSelectionChange}) {
         <Table.Column title="主机" dataIndex="host_name"/>
         <Table.Column title="服务" dataIndex="name"/>
         <Table.Column title="层级" dataIndex="runtime_layer" render={value => <Tag>{value || 'unknown'}</Tag>}/>
+        <Table.Column title="识别方式" dataIndex="detected_by" render={value => value || '--'}/>
         <Table.Column title="端口" dataIndex="port"/>
       </Table>
       <Table
@@ -1015,9 +943,8 @@ export default function TopologyIndex() {
   const edgeTypes = useMemo(() => enumMap(schema.edge_types), [schema]);
   const statusTypes = useMemo(() => enumMap(schema.statuses), [schema]);
   const selectedHostId = useMemo(() => {
-    if (selected && selected.type === 'host' && selected.source && selected.source.type === 'host') {
-      return selected.source.id;
-    }
+    const currentHostId = getRuntimeHostId(selected);
+    if (currentHostId) return currentHostId;
     const firstHost = (graphData.nodes || []).find(item => (
       item.is_active && item.type === 'host' && item.source && item.source.type === 'host'
     ));
@@ -1247,8 +1174,8 @@ export default function TopologyIndex() {
         <Space>
           <Button icon={<ReloadOutlined/>} loading={loading} onClick={reload}>刷新</Button>
           <Radio.Group value={viewMode} onChange={event => setViewMode(event.target.value)} buttonStyle="solid">
-            <Radio.Button value="servers">服务器视图</Radio.Button>
-            <Radio.Button value="runtime">单机服务</Radio.Button>
+            <Radio.Button value="servers">服务器链路</Radio.Button>
+            <Radio.Button value="runtime">服务链路</Radio.Button>
             <Radio.Button value="full">完整视图</Radio.Button>
           </Radio.Group>
           <Select value={filter} onChange={setFilter} style={{width: 136}}>

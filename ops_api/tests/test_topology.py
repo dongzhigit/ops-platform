@@ -188,15 +188,18 @@ class TopologyTest(TestCase):
 1 0 systemd Ss
 23 1 nginx S
 42 1 app S
-56 1 java S
+56 1 python S
+__OPS_TOPOLOGY_SECTION__ process_hints
+56 django
 __OPS_TOPOLOGY_SECTION__ listeners
 tcp LISTEN 0 128 0.0.0.0:80 0.0.0.0:* users:((\"nginx\",pid=23,fd=6))
-tcp LISTEN 0 128 0.0.0.0:8080 0.0.0.0:* users:((\"java\",pid=56,fd=6))
+tcp LISTEN 0 128 0.0.0.0:8080 0.0.0.0:* users:((\"python\",pid=56,fd=6))
+tcp LISTEN 0 128 0.0.0.0:39001 0.0.0.0:* -
 __OPS_TOPOLOGY_SECTION__ connections
 tcp ESTAB 0 0 192.168.18.226:80 192.168.18.10:51520 users:((\"nginx\",pid=23,fd=7))
 tcp ESTAB 0 0 192.168.18.226:41002 127.0.0.1:8080 users:((\"nginx\",pid=23,fd=10))
-tcp ESTAB 0 0 192.168.18.226:41000 192.168.18.20:3306 users:((\"app\",pid=42,fd=8))
-tcp ESTAB 0 0 192.168.18.226:41001 192.168.18.21:6379 users:((\"app\",pid=42,fd=9))
+tcp ESTAB 0 0 192.168.18.226:41000 192.168.18.20:3306 users:((\"python\",pid=56,fd=8))
+tcp ESTAB 0 0 192.168.18.226:41001 192.168.18.21:6379 users:((\"python\",pid=56,fd=9))
 """
 
         original = Host.get_ssh
@@ -215,6 +218,16 @@ tcp ESTAB 0 0 192.168.18.226:41001 192.168.18.21:6379 users:((\"app\",pid=42,fd=
                 len(preview[0]['recommendations']['connections']),
                 3,
             )
+            service_names = {
+                item['port']: item
+                for item in preview[0]['recommendations']['services']
+            }
+            self.assertEqual(service_names[8080]['name'], 'Django 8080/tcp')
+            self.assertTrue(service_names[8080]['selected'])
+            self.assertEqual(service_names[8080]['detected_by'], 'framework')
+            self.assertEqual(service_names[39001]['name'], 'TCP Service 39001/tcp')
+            self.assertFalse(service_names[39001]['selected'])
+            self.assertEqual(service_names[39001]['detected_by'], 'listener')
             self.assertFalse(TopologyNode.objects.filter(
                 source_type='runtime',
                 source_id=str(self.host.id),
@@ -222,6 +235,7 @@ tcp ESTAB 0 0 192.168.18.226:41001 192.168.18.21:6379 users:((\"app\",pid=42,fd=
             selected_service_keys = [
                 item['key']
                 for item in preview[0]['recommendations']['services']
+                if item['selected']
             ]
             selected_connection_keys = [
                 item['key']
@@ -244,7 +258,7 @@ tcp ESTAB 0 0 192.168.18.226:41001 192.168.18.21:6379 users:((\"app\",pid=42,fd=
 
         self.assertEqual(result[0]['status'], 'succeeded')
         self.assertEqual(result[0]['process_count'], 4)
-        self.assertEqual(result[0]['listener_count'], 2)
+        self.assertEqual(result[0]['listener_count'], 3)
         self.assertEqual(result[0]['connection_count'], 4)
         self.assertEqual(result[0]['dependency_connection_count'], 2)
         self.assertEqual(result[0]['business_connection_count'], 3)
@@ -252,11 +266,14 @@ tcp ESTAB 0 0 192.168.18.226:41001 192.168.18.21:6379 users:((\"app\",pid=42,fd=
         graph = topology_services.build_topology_graph(self.user)
         nodes = {item['key']: item for item in graph['nodes']}
         process_key = 'runtime:host:%s:process:23' % self.host.id
+        django_process_key = 'runtime:host:%s:process:56' % self.host.id
         port_key = 'runtime:host:%s:port:tcp:80' % self.host.id
         backend_port_key = 'runtime:host:%s:port:tcp:8080' % self.host.id
         self.assertEqual(nodes[process_key]['type'], 'process')
         self.assertEqual(nodes[port_key]['type'], 'port')
         self.assertEqual(nodes[backend_port_key]['metadata']['runtime_layer'], 'backend')
+        self.assertEqual(nodes[backend_port_key]['metadata']['service'], 'Django')
+        self.assertIn('Django', nodes[backend_port_key]['name'])
         self.assertEqual(
             len([item for item in nodes.values() if item['type'] == 'database']),
             1,
@@ -278,6 +295,17 @@ tcp ESTAB 0 0 192.168.18.226:41001 192.168.18.21:6379 users:((\"app\",pid=42,fd=
         self.assertEqual(
             len([item for item in graph['edges'] if item['type'] == 'calls']),
             3,
+        )
+        nodes_by_id = {item['id']: item for item in graph['nodes']}
+        dependency_calls = [
+            item for item in graph['edges']
+            if item['type'] == 'calls' and
+            nodes_by_id[item['target']]['type'] in ('database', 'middleware')
+        ]
+        self.assertEqual(len(dependency_calls), 2)
+        self.assertEqual(
+            {item['source'] for item in dependency_calls},
+            {nodes[django_process_key]['id']},
         )
 
         outsider_request = self.factory.get('/v1/topology/graph/')

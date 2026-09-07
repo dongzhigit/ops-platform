@@ -1,11 +1,11 @@
 # Project status and development handoff
 
-Last updated: 2026-09-05
+Last updated: 2026-09-07
 
 ## Current baseline
 
 - Branch: `3.0`
-- Release: `ops-v0.1.0-alpha.38`
+- Release: `ops-v0.1.0-alpha.40`
 - Baseline commit: `b1ff1e748a877158a498cf72b9b816a4cf7eebba`
 - Status: internal pre-release; do not describe it as production-ready.
 - Origin: ops-platform with authorization, security, remote access,
@@ -43,9 +43,10 @@ Last updated: 2026-09-05
   when an existing SSH credential or global key cannot authenticate. The
   password is used only for that verification/public-key installation step and
   is not stored.
-- Topology now defaults to a server-level graph and opens a focused per-host
-  runtime service graph from host nodes, so process and port detail no longer
-  overwhelms the first view.
+- Topology now defaults to a server-link graph and opens a focused service-link
+  graph from host nodes. The first view shows only server-to-server business
+  calls; service, port, database and middleware nodes appear only after
+  drilling into a server or switching to the full view.
 - The monitoring topology tab now links directly to the layered topology page
   to avoid confusing the legacy monitoring topology with runtime diagnosis.
 - Topology node cards now use wider two-line name and metadata areas, plus
@@ -74,6 +75,13 @@ Last updated: 2026-09-05
   only services and business dependencies confirmed by an operator or added
   manually become long-lived topology monitors; later scans refresh those
   fixed service/port statuses instead of adding every transient connection.
+- Runtime discovery now adds sanitized framework hints for Django-style Python
+  services. Remote hosts return only PID-to-framework labels, so Django
+  listeners can be shown as Django services without storing full command-line
+  arguments.
+- Runtime business links now preserve the concrete source process where
+  available, so a Django/Python process calling MySQL or Redis is not collapsed
+  into a generic host-level dependency.
 
 ## Planned AI topology diagnosis
 

@@ -40,6 +40,18 @@ RUNTIME_TOPOLOGY_MARKER = '__OPS_TOPOLOGY_SECTION__'
 RUNTIME_TOPOLOGY_COMMAND = """
 printf '__OPS_TOPOLOGY_SECTION__ processes\\n'
 ps -eo pid,ppid,comm,stat 2>/dev/null | tail -n +2 | head -1000
+printf '__OPS_TOPOLOGY_SECTION__ process_hints\\n'
+ps -eo pid=,args= 2>/dev/null | awk '
+{
+  pid=$1
+  line=tolower($0)
+  hint=""
+  if (line ~ /django/ || line ~ /manage\\.py/ || line ~ /gunicorn/ || line ~ /uwsgi/ || line ~ /uvicorn/ || line ~ /daphne/) hint="django"
+  else if (line ~ /celery/) hint="celery"
+  else if (line ~ /spring/ || line ~ /tomcat/ || line ~ /\\.jar/) hint="java"
+  else if (line ~ /nestjs/ || line ~ /express/ || line ~ /next/ || line ~ /nuxt/) hint="node"
+  if (pid ~ /^[0-9]+$/ && hint != "") printf "%s %s\\n", pid, hint
+}' 2>/dev/null | head -1000
 printf '__OPS_TOPOLOGY_SECTION__ listeners\\n'
 if command -v ss >/dev/null 2>&1; then
   ss -H -lntup 2>/dev/null | head -1000
@@ -115,6 +127,24 @@ RUNTIME_SYSTEM_PROCESSES = {
     'rpcbind',
 }
 RUNTIME_LOCAL_ADDRESSES = {'127.0.0.1', '::1', 'localhost'}
+RUNTIME_FRAMEWORK_PROFILES = {
+    'django': {
+        'service': 'Django',
+        'runtime_layer': 'backend',
+    },
+    'celery': {
+        'service': 'Celery Worker',
+        'runtime_layer': 'backend',
+    },
+    'java': {
+        'service': 'Java backend',
+        'runtime_layer': 'backend',
+    },
+    'node': {
+        'service': 'Node backend',
+        'runtime_layer': 'backend',
+    },
+}
 
 
 def topology_schema():
@@ -463,7 +493,12 @@ def _apply_status(view, status, status_source, evidence=None):
 
 
 def _split_runtime_sections(output):
-    sections = {'processes': [], 'listeners': [], 'connections': []}
+    sections = {
+        'processes': [],
+        'process_hints': [],
+        'listeners': [],
+        'connections': [],
+    }
     current = None
     for line in (output or '').splitlines():
         line = line.strip()
@@ -501,6 +536,18 @@ def _parse_processes(lines):
             'stat': parts[3][:20] if len(parts) > 3 else '',
         }
     return processes
+
+
+def _parse_process_hints(lines):
+    hints = {}
+    for line in lines:
+        parts = line.split(None, 1)
+        if len(parts) != 2 or not parts[0].isdigit():
+            continue
+        hint = parts[1].strip().lower()
+        if hint in RUNTIME_FRAMEWORK_PROFILES:
+            hints[int(parts[0])] = hint
+    return hints
 
 
 def _extract_process_refs(line):
@@ -741,6 +788,32 @@ def _runtime_dependency_for_endpoint(endpoint, protocol):
         'type': node_type,
         'service': service_name,
         'runtime_layer': node_type,
+        'detected_by': 'port',
+        'selected': True,
+    }
+
+
+def _runtime_process_profile(process):
+    process = process or {}
+    hint = str(process.get('framework') or '').strip().lower()
+    if hint in RUNTIME_FRAMEWORK_PROFILES:
+        profile = RUNTIME_FRAMEWORK_PROFILES[hint]
+        return {
+            'service': profile['service'],
+            'runtime_layer': profile['runtime_layer'],
+            'detected_by': 'framework',
+            'selected': True,
+        }
+    layer = _runtime_process_layer(process.get('name'))
+    if not layer:
+        return None
+    return {
+        'service': _runtime_service_label(
+            'Application', layer, process.get('name')
+        ),
+        'runtime_layer': layer,
+        'detected_by': 'process',
+        'selected': True,
     }
 
 
@@ -842,6 +915,8 @@ def _runtime_application_for_endpoint(endpoint, protocol, current_host_id,
             'type': 'port',
             'service': 'Frontend',
             'runtime_layer': 'frontend',
+            'detected_by': 'port',
+            'selected': True,
         }
     if port in RUNTIME_BACKEND_PORTS or (
             allow_ranges and _runtime_is_backend_port(port)):
@@ -850,6 +925,8 @@ def _runtime_application_for_endpoint(endpoint, protocol, current_host_id,
             'type': 'port',
             'service': 'Backend API',
             'runtime_layer': 'backend',
+            'detected_by': 'port',
+            'selected': True,
         }
     return None
 
@@ -862,20 +939,28 @@ def _runtime_listener_profile(listener, processes, current_host_id,
         return dependency
     for process_ref in listener.get('processes') or []:
         process = processes.get(process_ref['pid'], process_ref)
-        layer = _runtime_process_layer(process.get('name'))
-        if layer:
+        process_profile = _runtime_process_profile(process)
+        if process_profile:
             return {
                 'kind': 'application',
                 'type': 'port',
-                'service': _runtime_service_label(
-                    'Application', layer, process.get('name')
-                ),
-                'runtime_layer': layer,
+                'service': process_profile['service'],
+                'runtime_layer': process_profile['runtime_layer'],
             }
-    return _runtime_application_for_endpoint(
+    application = _runtime_application_for_endpoint(
         local, listener['protocol'], current_host_id, known_host_ips,
         allow_ranges=False
     )
+    if application:
+        return application
+    return {
+        'kind': 'application',
+        'type': 'port',
+        'service': 'TCP Service',
+        'runtime_layer': 'unknown',
+        'detected_by': 'listener',
+        'selected': False,
+    }
 
 
 def _runtime_source_is_business(connection, processes):
@@ -885,7 +970,7 @@ def _runtime_source_is_business(connection, processes):
     for process_ref in refs:
         process = processes.get(process_ref['pid'], process_ref)
         name = process.get('name')
-        if _runtime_process_layer(name) or not _runtime_is_system_process(name):
+        if _runtime_process_profile(process) or not _runtime_is_system_process(name):
             return True
     return False
 
@@ -1102,6 +1187,7 @@ def _runtime_scan_recommendations(host_id, processes, listeners, listener_profil
             'port': local['port'],
             'runtime_layer': profile.get('runtime_layer'),
             'connection_kind': profile['kind'],
+            'detected_by': profile.get('detected_by'),
             'processes': [
                 '%s[%s]' % (
                     processes.get(item['pid'], item).get('name'),
@@ -1109,7 +1195,7 @@ def _runtime_scan_recommendations(host_id, processes, listeners, listener_profil
                 )
                 for item in listener['processes'][:5]
             ],
-            'selected': True,
+            'selected': profile.get('selected', True),
         }
 
     connection_map = {}
@@ -1325,6 +1411,10 @@ def sync_runtime_topology(user, host_ids, dry_run=False,
                 raise ValueError('运行态扫描命令执行失败')
             sections = _split_runtime_sections(output)
             processes = _parse_processes(sections['processes'])
+            process_hints = _parse_process_hints(sections['process_hints'])
+            for pid, hint in process_hints.items():
+                if pid in processes:
+                    processes[pid]['framework'] = hint
             listeners = _parse_sockets(sections['listeners'])
             connections = _parse_sockets(sections['connections'])
             for socket in listeners + connections:
@@ -1334,6 +1424,7 @@ def sync_runtime_topology(user, host_ids, dry_run=False,
                         'ppid': None,
                         'name': process_ref['name'],
                         'stat': '',
+                        'framework': process_hints.get(process_ref['pid'], ''),
                     })
             listener_profiles = {}
             relevant_listener_keys = set()
@@ -1490,7 +1581,11 @@ def sync_runtime_topology(user, host_ids, dry_run=False,
                 for process in processes.values():
                     if process['pid'] not in business_pids:
                         continue
-                    runtime_layer = _runtime_process_layer(process['name'])
+                    process_profile = _runtime_process_profile(process)
+                    runtime_layer = (
+                        process_profile['runtime_layer']
+                        if process_profile else _runtime_process_layer(process['name'])
+                    )
                     node = _upsert_node(
                         user,
                         _runtime_key('runtime', 'host', host.id, 'process', process['pid']),
@@ -1504,6 +1599,9 @@ def sync_runtime_topology(user, host_ids, dry_run=False,
                             pid=process['pid'],
                             ppid=process.get('ppid'),
                             process_name=process['name'],
+                            framework=process.get('framework') or '',
+                            service=process_profile['service']
+                            if process_profile else '',
                             stat=process.get('stat'),
                             runtime_layer=runtime_layer or 'application',
                         ),
@@ -1560,6 +1658,7 @@ def sync_runtime_topology(user, host_ids, dry_run=False,
                                 connection_kind=profile['kind'],
                                 runtime_layer=profile.get('runtime_layer'),
                                 service=profile['service'],
+                                detected_by=profile.get('detected_by'),
                             ),
                             source_id=host.id,
                             description='监听地址 %s:%s' % (local['address'], local['port']),
@@ -1639,7 +1738,6 @@ def sync_runtime_topology(user, host_ids, dry_run=False,
                                     local.get('port'),
                                 )) or host_node
                             ]
-                        source_nodes = [host_node]
                     source_nodes = [item for item in source_nodes if item]
                     if not source_nodes or not target_endpoint:
                         continue
