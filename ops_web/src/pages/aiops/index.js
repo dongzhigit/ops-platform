@@ -5,7 +5,8 @@ import {
   Table, Tag, Timeline, Typography, message,
 } from 'antd';
 import {
-  EyeOutlined, RobotOutlined, SearchOutlined, SettingOutlined,
+  EyeOutlined, RobotOutlined, SafetyCertificateOutlined, SearchOutlined,
+  SettingOutlined,
 } from '@ant-design/icons';
 
 import { AuthDiv, Breadcrumb } from 'components';
@@ -17,6 +18,39 @@ const STATUS_COLORS = {running: 'processing', completed: 'green', failed: 'red'}
 const RISK_LABELS = {low: '低风险', medium: '中风险', high: '高风险', critical: '严重风险'};
 const RISK_COLORS = {low: 'green', medium: 'blue', high: 'orange', critical: 'red'};
 const CONFIDENCE_LABELS = {low: '低', medium: '中', high: '高'};
+const REMEDIATION_STATUS_LABELS = {
+  draft: '待提交',
+  approval_pending: '待审批',
+  approved: '已批准',
+  executing: '执行登记中',
+  succeeded: '已验证成功',
+  failed: '验证失败',
+  rolled_back: '已回滚',
+  rejected: '已驳回',
+  cancelled: '已取消',
+  expired: '已过期',
+};
+const REMEDIATION_STATUS_COLORS = {
+  draft: 'default',
+  approval_pending: 'processing',
+  approved: 'green',
+  executing: 'processing',
+  succeeded: 'green',
+  failed: 'red',
+  rolled_back: 'purple',
+  rejected: 'red',
+  cancelled: 'default',
+  expired: 'orange',
+};
+const EXECUTION_STATUS_LABELS = {running: '执行登记中', succeeded: '已验证成功', failed: '验证失败', rolled_back: '已回滚'};
+const EXECUTION_STATUS_COLORS = {running: 'processing', succeeded: 'green', failed: 'red', rolled_back: 'purple'};
+const PLATFORM_ACTION_LABELS = {
+  'exec.run': '批量执行',
+  'deploy.run': '发布执行',
+  'schedule.run': '计划任务',
+  'file.distribute': '文件分发',
+  'config.write': '配置写入',
+};
 
 
 function ModelConfigModal({visible, config, onCancel, onSuccess}) {
@@ -179,9 +213,288 @@ function CitationTags({values}) {
 }
 
 
+function RemediationProposalModal({visible, plan, actions, onCancel, onSuccess}) {
+  const [form] = Form.useForm();
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (!visible || !plan) return;
+    const targets = [];
+    const validations = [];
+    const rollbacks = [];
+    (plan.steps || []).forEach(step => {
+      (step.targets || []).forEach(item => {
+        if (item && !targets.includes(item)) targets.push(item);
+      });
+      if (step.validation) validations.push(step.validation);
+      if (step.rollback) rollbacks.push(step.rollback);
+    });
+    form.setFieldsValue({
+      proposed_action: 'manual_check',
+      title: plan.title,
+      summary: plan.summary,
+      target_refs: targets,
+      validation_plan: validations.join('\n'),
+      rollback_plan: plan.rollback_plan || rollbacks.join('\n'),
+    });
+  }, [visible, plan, form]);
+
+  function submit() {
+    form.validateFields().then(values => {
+      setSaving(true);
+      return http.post('/api/v1/aiops/remediations/', {
+        action_plan_id: plan.id,
+        ...values,
+      });
+    }).then(data => {
+      message.success('修复提案已创建');
+      onSuccess(data);
+    }).finally(() => setSaving(false));
+  }
+
+  return (
+    <Modal
+      visible={visible}
+      width={760}
+      title="受控修复提案"
+      confirmLoading={saving}
+      onOk={submit}
+      onCancel={onCancel}
+      destroyOnClose>
+      <Alert
+        showIcon
+        type="warning"
+        message="提案只会提交审批，不会执行命令、脚本、发布、配置写入或流量切换。"
+        style={{marginBottom: 16}}/>
+      <Form form={form} layout="vertical" preserve={false}>
+        <Form.Item
+          name="proposed_action"
+          label="白名单动作"
+          rules={[{required: true, message: '请选择白名单动作'}]}>
+          <Select>
+            {(actions || []).map(item => (
+              <Select.Option key={item.value} value={item.value}>
+                {item.label} / {RISK_LABELS[item.risk_level]}
+              </Select.Option>
+            ))}
+          </Select>
+        </Form.Item>
+        <Form.Item name="title" label="标题" rules={[{required: true}, {max: 200}]}>
+          <Input/>
+        </Form.Item>
+        <Form.Item name="summary" label="提案说明" rules={[{required: true}, {max: 4000}]}>
+          <Input.TextArea rows={4} maxLength={4000} showCount/>
+        </Form.Item>
+        <Form.Item name="target_refs" label="目标引用" rules={[{required: true}]}>
+          <Select mode="tags" tokenSeparators={[',', '，']} maxTagCount={6}/>
+        </Form.Item>
+        <Form.Item name="validation_plan" label="验证方案" rules={[{required: true}, {max: 4000}]}>
+          <Input.TextArea rows={3} maxLength={4000} showCount/>
+        </Form.Item>
+        <Form.Item name="rollback_plan" label="回滚方案" rules={[{max: 4000}]}>
+          <Input.TextArea rows={3} maxLength={4000} showCount/>
+        </Form.Item>
+      </Form>
+    </Modal>
+  );
+}
+
+
+function RemediationExecutionModal({visible, proposal, record, onCancel, onSuccess}) {
+  const [form] = Form.useForm();
+  const [saving, setSaving] = useState(false);
+  const [references, setReferences] = useState([]);
+  const [loadingRefs, setLoadingRefs] = useState(false);
+  const [platformAction, setPlatformAction] = useState();
+  const isUpdate = Boolean(record && record.id);
+
+  function loadReferences(action) {
+    setReferences([]);
+    if (!action) return;
+    setLoadingRefs(true);
+    http.get('/api/v1/aiops/remediations/platform-references/', {
+      params: {platform_action: action},
+    }).then(setReferences).finally(() => setLoadingRefs(false));
+  }
+
+  useEffect(() => {
+    if (!visible) return;
+    if (isUpdate) {
+      form.setFieldsValue({
+        status: 'succeeded',
+        validation_result: record.validation_result || '',
+        rollback_result: record.rollback_result || '',
+      });
+    } else {
+      setPlatformAction(undefined);
+      setReferences([]);
+      form.setFieldsValue({
+        mode: 'manual_record',
+        platform_action: undefined,
+        execution_ref: '',
+        execution_summary: '',
+      });
+    }
+  }, [visible, isUpdate, record, form]);
+
+  function submit() {
+    form.validateFields().then(values => {
+      setSaving(true);
+      const payload = isUpdate ? {id: record.id, ...values} : {
+        proposal_id: proposal.id,
+        ...values,
+      };
+      return http.post('/api/v1/aiops/remediations/executions/', payload);
+    }).then(() => {
+      message.success(isUpdate ? '执行结果已记录' : '执行登记已创建');
+      onSuccess();
+    }).finally(() => setSaving(false));
+  }
+
+  return (
+    <Modal
+      visible={visible}
+      width={720}
+      title={isUpdate ? '记录验证/回滚结果' : '登记受控执行证据'}
+      confirmLoading={saving}
+      onOk={submit}
+      onCancel={onCancel}
+      destroyOnClose>
+      <Alert
+        showIcon
+        type="warning"
+        message="这里仅记录审批后的执行证据，不会调用 SSH、发布、配置写入或流量切换。"
+        style={{marginBottom: 16}}/>
+      <Form form={form} layout="vertical" preserve={false}>
+        {!isUpdate ? (
+          <>
+            <Form.Item name="mode" label="登记模式" rules={[{required: true}]}>
+              <Select>
+                <Select.Option value="manual_record">人工执行记录</Select.Option>
+                <Select.Option value="platform_reference">平台执行引用</Select.Option>
+              </Select>
+            </Form.Item>
+            <Form.Item noStyle shouldUpdate={(prev, next) => prev.mode !== next.mode}>
+              {({getFieldValue}) => (
+                <Form.Item
+                  name="platform_action"
+                  label="平台动作"
+                  rules={[{
+                    required: getFieldValue('mode') === 'platform_reference',
+                    message: '请选择平台动作',
+                  }]}>
+                  <Select
+                    allowClear
+                    onChange={value => {
+                      setPlatformAction(value);
+                      form.setFieldsValue({execution_ref: undefined});
+                      loadReferences(value);
+                    }}>
+                    {Object.entries(PLATFORM_ACTION_LABELS).map(([key, value]) => (
+                      <Select.Option key={key} value={key}>{value}</Select.Option>
+                    ))}
+                  </Select>
+                </Form.Item>
+              )}
+            </Form.Item>
+            <Form.Item noStyle shouldUpdate={(prev, next) => (
+              prev.mode !== next.mode || prev.platform_action !== next.platform_action
+            )}>
+              {({getFieldValue}) => (
+                <Form.Item
+                  name="execution_ref"
+                  label="执行引用"
+                  rules={[{
+                    required: getFieldValue('mode') === 'platform_reference',
+                    message: '请选择执行引用',
+                  }]}>
+                  <Select
+                    showSearch
+                    allowClear
+                    loading={loadingRefs}
+                    disabled={!platformAction}
+                    placeholder="选择已存在的平台执行记录"
+                    notFoundContent={platformAction ? '暂无可见记录' : '请先选择平台动作'}>
+                    {references.map(item => (
+                      <Select.Option key={`${item.platform_action}:${item.ref}`} value={item.ref}>
+                        {item.label}
+                      </Select.Option>
+                    ))}
+                  </Select>
+                </Form.Item>
+              )}
+            </Form.Item>
+            <Form.Item name="execution_summary" label="执行摘要" rules={[{required: true}, {max: 4000}]}>
+              <Input.TextArea rows={4} maxLength={4000} showCount/>
+            </Form.Item>
+          </>
+        ) : (
+          <>
+            <Form.Item name="status" label="结果状态" rules={[{required: true}]}>
+              <Select>
+                <Select.Option value="succeeded">已验证成功</Select.Option>
+                <Select.Option value="failed">验证失败</Select.Option>
+                <Select.Option value="rolled_back">已回滚</Select.Option>
+              </Select>
+            </Form.Item>
+            <Form.Item name="validation_result" label="验证结果">
+              <Input.TextArea rows={4} maxLength={4000} showCount/>
+            </Form.Item>
+            <Form.Item name="rollback_result" label="回滚结果">
+              <Input.TextArea rows={4} maxLength={4000} showCount/>
+            </Form.Item>
+          </>
+        )}
+      </Form>
+    </Modal>
+  );
+}
+
+
 function InvestigationDetail({visible, record, onClose}) {
   const result = record.result || {};
   const plan = record.action_plan;
+  const [remediations, setRemediations] = useState([]);
+  const [remediationActions, setRemediationActions] = useState([]);
+  const [remediationVisible, setRemediationVisible] = useState(false);
+  const [executionTarget, setExecutionTarget] = useState(null);
+  const [executionRecord, setExecutionRecord] = useState(null);
+  const [submittingProposal, setSubmittingProposal] = useState(false);
+  const canViewRemediation = hasPermission('aiops.remediation.view') || hasPermission('aiops.remediation.manage');
+  const canManageRemediation = hasPermission('aiops.remediation.manage');
+
+  function reloadRemediations() {
+    if (!plan || !canViewRemediation) return Promise.resolve();
+    return http.get('/api/v1/aiops/remediations/', {
+      params: {action_plan_id: plan.id},
+    }).then(data => {
+      setRemediationActions(data.actions || []);
+      setRemediations(data.proposals || []);
+    });
+  }
+
+  useEffect(() => {
+    if (visible && plan && canViewRemediation) {
+      reloadRemediations();
+    } else {
+      setRemediations([]);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible, plan && plan.id]);
+
+  function submitApproval(proposal) {
+    setSubmittingProposal(true);
+    http.post('/api/v1/aiops/remediations/approval/', {id: proposal.id}).then(() => {
+      message.success('已提交到安全中心审批');
+      reloadRemediations();
+    }).finally(() => setSubmittingProposal(false));
+  }
+
+  function openExecution(proposal, execution) {
+    setExecutionTarget(proposal);
+    setExecutionRecord(execution || null);
+  }
+
   return (
     <Drawer visible={visible} width={980} title="AI 只读调查详情" onClose={onClose}>
       {record.id ? (
@@ -267,6 +580,97 @@ function InvestigationDetail({visible, record, onClose}) {
                   {plan.rollback_plan && (
                     <Alert type="info" message={`总体回退：${plan.rollback_plan}`}/>
                   )}
+                  {canViewRemediation && (
+                    <>
+                      <Divider orientation="left">受控修复提案</Divider>
+                      <List
+                        size="small"
+                        dataSource={remediations}
+                        locale={{emptyText: '暂无修复提案'}}
+                        renderItem={item => (
+                          <List.Item
+                            actions={[
+                              item.status === 'draft' && canManageRemediation ? (
+                                <Button
+                                  type="link"
+                                  loading={submittingProposal}
+                                  onClick={() => submitApproval(item)}>
+                                  提交审批
+                                </Button>
+                              ) : null,
+                              item.status === 'approved' && canManageRemediation ? (
+                                <Button type="link" onClick={() => openExecution(item)}>
+                                  登记执行
+                                </Button>
+                              ) : null,
+                            ].filter(Boolean)}>
+                            <List.Item.Meta
+                              title={<Space>
+                                <span>{item.title}</span>
+                                <Tag color={RISK_COLORS[item.risk_level]}>{RISK_LABELS[item.risk_level]}</Tag>
+                                <Tag color={REMEDIATION_STATUS_COLORS[item.status]}>{REMEDIATION_STATUS_LABELS[item.status]}</Tag>
+                              </Space>}
+                              description={<div>
+                                <div>{item.summary}</div>
+                                <div style={{marginTop: 6}}>
+                                  {(item.target_refs || []).map(ref => <Tag key={ref}>{ref}</Tag>)}
+                                  {item.approval_id && (
+                                    <Typography.Text code copyable style={{marginLeft: 8}}>
+                                      {item.approval_id}
+                                    </Typography.Text>
+                                  )}
+                                </div>
+                                {(item.executions || []).length > 0 && (
+                                  <List
+                                    size="small"
+                                    style={{marginTop: 8}}
+                                    dataSource={item.executions || []}
+                                    renderItem={execution => (
+                                      <List.Item
+                                        actions={[
+                                          execution.status === 'running' && canManageRemediation ? (
+                                            <Button type="link" onClick={() => openExecution(item, execution)}>
+                                              记录结果
+                                            </Button>
+                                          ) : null,
+                                        ].filter(Boolean)}>
+                                        <Space direction="vertical" size={2}>
+                                          <Space>
+                                            <Tag color={EXECUTION_STATUS_COLORS[execution.status]}>
+                                              {EXECUTION_STATUS_LABELS[execution.status]}
+                                            </Tag>
+                                            <Tag>{execution.mode === 'platform_reference' ? '平台引用' : '人工记录'}</Tag>
+                                            {execution.platform_action && <Tag>{PLATFORM_ACTION_LABELS[execution.platform_action] || execution.platform_action}</Tag>}
+                                            {execution.execution_ref && <Typography.Text code copyable>{execution.execution_ref}</Typography.Text>}
+                                          </Space>
+                                          <Typography.Text>{execution.execution_summary}</Typography.Text>
+                                          {execution.validation_result && (
+                                            <Typography.Text type="secondary">验证：{execution.validation_result}</Typography.Text>
+                                          )}
+                                          {execution.rollback_result && (
+                                            <Typography.Text type="secondary">回滚：{execution.rollback_result}</Typography.Text>
+                                          )}
+                                          {execution.platform_record && execution.platform_record.record_type && (
+                                            <Typography.Text type="secondary">
+                                              平台记录：{execution.platform_record.record_type} #{execution.platform_record.record_id}
+                                            </Typography.Text>
+                                          )}
+                                        </Space>
+                                      </List.Item>
+                                    )}/>
+                                )}
+                              </div>}/>
+                          </List.Item>
+                        )}/>
+                      {canManageRemediation && (
+                        <Button
+                          icon={<SafetyCertificateOutlined/>}
+                          onClick={() => setRemediationVisible(true)}>
+                          生成受控修复提案
+                        </Button>
+                      )}
+                    </>
+                  )}
                 </Card>
               )}
             </>
@@ -284,6 +688,28 @@ function InvestigationDetail({visible, record, onClose}) {
               </Collapse.Panel>
             ))}
           </Collapse>
+          <RemediationProposalModal
+            visible={remediationVisible}
+            plan={plan}
+            actions={remediationActions}
+            onCancel={() => setRemediationVisible(false)}
+            onSuccess={() => {
+              setRemediationVisible(false);
+              reloadRemediations();
+            }}/>
+          <RemediationExecutionModal
+            visible={Boolean(executionTarget)}
+            proposal={executionTarget || {}}
+            record={executionRecord}
+            onCancel={() => {
+              setExecutionTarget(null);
+              setExecutionRecord(null);
+            }}
+            onSuccess={() => {
+              setExecutionTarget(null);
+              setExecutionRecord(null);
+              reloadRemediations();
+            }}/>
         </>
       ) : <Empty/>}
     </Drawer>
@@ -385,7 +811,7 @@ export default function AIOpsIndex() {
   }];
 
   return (
-    <AuthDiv auth="aiops.investigation.view|aiops.config.manage">
+    <AuthDiv auth="aiops.investigation.view|aiops.remediation.view|aiops.remediation.manage|aiops.config.manage">
       <Breadcrumb>
         <Breadcrumb.Item>首页</Breadcrumb.Item>
         <Breadcrumb.Item>知识与 AI</Breadcrumb.Item>

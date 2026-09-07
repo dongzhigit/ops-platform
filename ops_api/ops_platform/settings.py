@@ -42,8 +42,10 @@ INSTALLED_APPS = [
     'apps.assets',
     'apps.gateway',
     'apps.observability',
+    'apps.topology',
     'apps.knowledge',
     'apps.aiops',
+    'apps.incident',
     'apps.file',
     'apps.host',
     'apps.setting',
@@ -147,7 +149,7 @@ AUTHENTICATION_EXCLUDES = (
 )
 
 SPUG_VERSION = 'v3.4.0'
-OPS_PLATFORM_VERSION = os.environ.get('OPS_PLATFORM_VERSION', '0.1.0-alpha.14')
+OPS_PLATFORM_VERSION = os.environ.get('OPS_PLATFORM_VERSION', '0.1.0-alpha.38')
 
 # override default config
 try:

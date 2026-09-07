@@ -49,6 +49,12 @@ METRICS = {
     },
 }
 
+METRIC_TARGET_LABELS = (
+    ('ops-platform-node', 'ops_platform_host_id'),
+    ('spug-node', 'ops_platform_host_id'),
+    ('spug-node', 'spug_host_id'),
+)
+
 
 class ObservabilityError(Exception):
     pass
@@ -339,16 +345,21 @@ def service_discovery_targets():
     return result
 
 
-def _selector(host_id):
-    return ',ops_platform_host_id="%s"' % int(host_id) if host_id is not None else ''
+def _selector(host_id, host_label='ops_platform_host_id'):
+    return ',%s="%s"' % (host_label, int(host_id)) if host_id is not None else ''
 
 
-def metric_query(metric, host_id=None):
+def metric_query(metric, host_id=None, job_name='ops-platform-node',
+                 host_label='ops_platform_host_id'):
     if metric not in METRICS:
         raise ObservabilityError('不支持的指标类型')
-    selector = _selector(host_id)
+    selector = _selector(host_id, host_label=host_label)
+    query = METRICS[metric]['query'].replace(
+        'job="ops-platform-node"',
+        'job="%s"' % job_name,
+    ).replace('ops_platform_host_id', host_label)
     count = METRICS[metric]['query'].count('%s')
-    return METRICS[metric]['query'] % tuple(selector for _ in range(count))
+    return query % tuple(selector for _ in range(count))
 
 
 def _prometheus_get(path, params):
@@ -371,22 +382,32 @@ def _prometheus_get(path, params):
 
 
 def query_metric(metric, host_id, start=None, end=None, step=None):
-    query = metric_query(metric, host_id=host_id)
-    if start is None:
-        data = _prometheus_get('/api/v1/query', {'query': query})
-    else:
-        data = _prometheus_get('/api/v1/query_range', {
-            'query': query,
-            'start': start,
-            'end': end,
-            'step': step,
-        })
+    result = []
+    result_type = None
+    for job_name, host_label in METRIC_TARGET_LABELS:
+        query = metric_query(
+            metric,
+            host_id=host_id,
+            job_name=job_name,
+            host_label=host_label,
+        )
+        if start is None:
+            data = _prometheus_get('/api/v1/query', {'query': query})
+        else:
+            data = _prometheus_get('/api/v1/query_range', {
+                'query': query,
+                'start': start,
+                'end': end,
+                'step': step,
+            })
+        result_type = result_type or data.get('resultType')
+        result.extend(data.get('result', []))
     return {
         'metric': metric,
         'name': METRICS[metric]['name'],
         'unit': METRICS[metric]['unit'],
-        'result_type': data.get('resultType'),
-        'result': data.get('result', []),
+        'result_type': result_type,
+        'result': result,
     }
 
 
@@ -394,13 +415,18 @@ def query_summary(host_ids):
     allowed = {str(item) for item in host_ids}
     output = {item: {} for item in allowed}
     for metric in METRICS:
-        data = _prometheus_get('/api/v1/query', {
-            'query': metric_query(metric),
-        })
-        for row in data.get('result', []):
-            host_id = str(row.get('metric', {}).get('ops_platform_host_id', ''))
-            if host_id in allowed and row.get('value'):
-                output[host_id][metric] = row['value'][1]
+        for job_name, host_label in METRIC_TARGET_LABELS:
+            data = _prometheus_get('/api/v1/query', {
+                'query': metric_query(
+                    metric,
+                    job_name=job_name,
+                    host_label=host_label,
+                ),
+            })
+            for row in data.get('result', []):
+                host_id = str(row.get('metric', {}).get(host_label, ''))
+                if host_id in allowed and row.get('value'):
+                    output[host_id][metric] = row['value'][1]
     return output
 
 

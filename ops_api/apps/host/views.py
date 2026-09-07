@@ -50,10 +50,12 @@ class HostView(View):
             if form.id and current_host is None:
                 return json_response(error='未找到指定主机')
             current_binding = current_host.get_default_identity_binding() if current_host else None
+            if current_binding and form.password:
+                return json_response(error='该主机正在使用托管身份，请在资产凭据中心修改绑定凭据或解绑后再使用密码验证')
             if current_binding and (form.pkey or form.clear_pkey):
                 return json_response(error='该主机正在使用托管身份，请在资产凭据中心修改绑定')
             connection_override = None
-            if current_host and not form.pkey and not form.clear_pkey:
+            if current_host and not form.password and not form.pkey and not form.clear_pkey:
                 connection_override = current_host.get_connection_profile()
             if not _do_host_verify(form, connection_override=connection_override):
                 return json_response('auth fail')
@@ -234,6 +236,8 @@ def _do_host_verify(form, connection_override=None):
                 ssh.ping()
             return True
         except AuthenticationException:
+            if not connection_override.get('identity_id'):
+                return False
             raise Exception('托管身份认证失败，请检查绑定的凭据')
         except socket.timeout:
             raise Exception('连接主机超时，请检查网络')

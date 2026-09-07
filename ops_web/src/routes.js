@@ -16,6 +16,7 @@ import {
   AlertOutlined,
   ReadOutlined,
   RobotOutlined,
+  ApartmentOutlined,
   SafetyCertificateOutlined,
   SettingOutlined
 } from '@ant-design/icons';
@@ -35,6 +36,8 @@ import ConfigService from './pages/config/service';
 import ConfigApp from './pages/config/app';
 import ConfigSetting from './pages/config/setting';
 import MonitorIndex from './pages/monitor';
+import TopologyIndex from './pages/topology';
+import IncidentIndex from './pages/incident';
 import AlarmIndex from './pages/alarm/alarm';
 import AlarmGroup from './pages/alarm/group';
 import AlarmContact from './pages/alarm/contact';
@@ -89,6 +92,8 @@ export default [
     ]
   },
   {icon: <MonitorOutlined/>, title: '监控中心', auth: 'monitor.monitor.view|monitor.metrics.view', path: '/monitor', component: MonitorIndex},
+  {icon: <ApartmentOutlined/>, title: '拓扑诊断', auth: 'topology.topology.view|topology.topology.manage', path: '/topology', component: TopologyIndex},
+  {icon: <AlertOutlined/>, title: '事件作战室', auth: 'incident.room.view|incident.room.manage', path: '/incidents', component: IncidentIndex},
   {
     icon: <AlertOutlined/>, title: '报警中心', auth: 'alarm.alarm.view|alarm.event.view|alarm.contact.view|alarm.group.view', child: [
       {title: '报警工作台', auth: 'alarm.alarm.view|alarm.event.view', path: '/alarm/alarm', component: AlarmIndex},
@@ -98,9 +103,9 @@ export default [
   },
   {
     icon: <ReadOutlined/>, title: '知识与 AI',
-    auth: 'knowledge.space.view|knowledge.document.view|aiops.investigation.view|aiops.config.manage', child: [
+    auth: 'knowledge.space.view|knowledge.document.view|aiops.investigation.view|aiops.remediation.view|aiops.config.manage', child: [
       {title: '知识库', auth: 'knowledge.space.view|knowledge.document.view', path: '/knowledge', component: KnowledgeIndex},
-      {title: 'AI 运维', auth: 'aiops.investigation.view|aiops.config.manage', path: '/aiops', component: AIOpsIndex, icon: <RobotOutlined/>},
+      {title: 'AI 运维', auth: 'aiops.investigation.view|aiops.remediation.view|aiops.config.manage', path: '/aiops', component: AIOpsIndex, icon: <RobotOutlined/>},
     ]
   },
   {

@@ -1,11 +1,11 @@
 # Project status and development handoff
 
-Last updated: 2026-08-25
+Last updated: 2026-09-05
 
 ## Current baseline
 
 - Branch: `3.0`
-- Release: `ops-v0.1.0-alpha.14`
+- Release: `ops-v0.1.0-alpha.38`
 - Baseline commit: `b1ff1e748a877158a498cf72b9b816a4cf7eebba`
 - Status: internal pre-release; do not describe it as production-ready.
 - Origin: ops-platform with authorization, security, remote access,
@@ -31,6 +31,7 @@ Last updated: 2026-08-25
 
 ## Latest operational fixes
 
+- Application image/version naming now uses the `ops-platform:*` tag.
 - The observability Docker bridge now uses an explicit configurable subnet.
   This prevents Docker from allocating a subnet that shadows a managed host or
   an internal model-service address.
@@ -38,6 +39,60 @@ Last updated: 2026-08-25
   do not provide the Linux filesystem semantics required by InnoDB.
 - The model request timeout is configurable up to 120 seconds. Slow internal
   reasoning models may require a value greater than the 30-second default.
+- Host verification now lets an operator retry with a temporary login password
+  when an existing SSH credential or global key cannot authenticate. The
+  password is used only for that verification/public-key installation step and
+  is not stored.
+- Topology now defaults to a server-level graph and opens a focused per-host
+  runtime service graph from host nodes, so process and port detail no longer
+  overwhelms the first view.
+- The monitoring topology tab now links directly to the layered topology page
+  to avoid confusing the legacy monitoring topology with runtime diagnosis.
+- Topology node cards now use wider two-line name and metadata areas, plus
+  hover text for the full raw value, so long host, service and port identifiers
+  are not hidden by the first view.
+- Topology node cards can be dragged within the current canvas and automatic
+  row spacing is wider, so operators can separate crowded nodes while keeping
+  connection lines aligned with the moved cards.
+- Topology edge labels now wrap into multiple SVG text lines with a light
+  background instead of being truncated to ten characters.
+- Runtime topology now keeps business dependency calls such as MySQL, Redis,
+  PostgreSQL, MongoDB, RabbitMQ and Kafka, while generic established TCP
+  connections are filtered out of the default diagnosis graph.
+- Runtime topology now recognizes frontend, backend, database and middleware
+  links for common Nginx/Vue/Node/Python/Go/Java stacks, and the host creation
+  form can trigger read-only business-topology discovery after verification.
+- Host onboarding now previews discovered services and business links before
+  topology generation, so operators can confirm the default selection instead
+  of writing discovered topology immediately.
+- Runtime topology now resolves connections to scanned remote listener services
+  and includes the target service name in port nodes and edge labels.
+- Runtime topology now parses `tcp6`/`udp6` socket rows, keeps inbound
+  database/middleware connections whose service port is on the local side, and
+  shows important MySQL/Redis-style listeners in the server-level graph.
+- Runtime discovery now separates candidate discovery from fixed monitoring:
+  only services and business dependencies confirmed by an operator or added
+  manually become long-lived topology monitors; later scans refresh those
+  fixed service/port statuses instead of adding every transient connection.
+
+## Planned AI topology diagnosis
+
+- AI topology diagnosis, remediation evidence and incident-room workflows are
+  tracked in [M6 AI topology diagnosis](M6_AI_TOPOLOGY_DIAGNOSIS.md).
+- P0 data model, P1 static topology, P2 monitoring/alert status linkage,
+  P3 read-only AI topology diagnosis, P4 incident room workflow, P5
+  controlled remediation proposal approval workflow, P6 execution evidence
+  records, P7 platform operation reference validation, P8 incident
+  closed-loop display, P9 runtime process topology scanning, P10 layered
+  topology views, P11 business-link discovery, P12 host-onboarding topology
+  confirmation, P13 remote-service labeling, P14 bidirectional dependency
+  normalization and P15 fixed business-service monitoring are
+  implemented. Remaining work should focus on acceptance testing with real
+  production-like assets and operation-module integration depth, while keeping
+  writes behind the existing authorization, approval and audit paths.
+- Progress reports for this feature should use the status template in the M6
+  document so each handoff states the current phase, completed work,
+  verification result, open issues and recommended next phase.
 
 ## Known boundaries
 
@@ -65,10 +120,12 @@ Last updated: 2026-08-25
 
 ## Suggested next work
 
-1. Modernize the supported OS, Python and Django runtime with migration tests.
-2. Improve health checks so the ops-platform container fails health when core
+1. Run production-like acceptance tests for M6 with real asset scopes,
+   monitoring alerts, platform execution records and incident handoffs.
+2. Modernize the supported OS, Python and Django runtime with migration tests.
+3. Improve health checks so the ops-platform container fails health when core
    Supervisor processes are not running, rather than checking Nginx alone.
-3. Add repeatable Windows and Linux acceptance scripts for RDP/VNC, monitoring,
+4. Add repeatable Windows and Linux acceptance scripts for RDP/VNC, monitoring,
    SFTP, notifications and AI provider compatibility.
-4. Complete backup/restore, credential-key rotation and disaster-recovery
+5. Complete backup/restore, credential-key rotation and disaster-recovery
    exercises before any production designation.

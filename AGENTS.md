@@ -22,6 +22,7 @@
 - `docs/M3_REMOTE_DESKTOP.md`: RDP/VNC through Guacamole.
 - `docs/M4_OBSERVABILITY.md`: Prometheus, Alertmanager, metrics and alerts.
 - `docs/M5_KNOWLEDGE_AIOPS.md`: knowledge base and read-only AI investigation.
+- `docs/M6_AI_TOPOLOGY_DIAGNOSIS.md`: AI-assisted topology diagnosis and incident room planning.
 - `docs/SECURITY_BASELINE.md`: security constraints that must remain true.
 
 ## Working rules

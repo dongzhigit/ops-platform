@@ -23,6 +23,7 @@ ACTION_RISKS = {
     'schedule.run': 'high',
     'deploy.run': 'critical',
     'config.write': 'high',
+    'aiops.remediation.propose': 'high',
 }
 APPROVABLE_ACTIONS = frozenset(ACTION_RISKS).union({'exec.run'})
 CRITICAL_COMMAND_PATTERNS = (
@@ -105,6 +106,10 @@ def assess_risk(action, payload=None, target_count=None):
             risk = 'critical'
         elif any(re.search(pattern, command, re.I) for pattern in HIGH_COMMAND_PATTERNS):
             risk = 'high'
+    elif action == 'aiops.remediation.propose':
+        payload_risk = str(payload.get('risk_level') or '').lower()
+        if payload_risk in RISK_ORDER:
+            risk = _raise_risk(risk, payload_risk)
     if target_count is None:
         target_count = len(payload.get('host_ids') or payload.get('resource_ids') or [])
     if target_count >= 50:

@@ -209,3 +209,192 @@ class AIActionPlan(models.Model, ModelMixin):
     class Meta:
         db_table = 'ai_action_plans'
         ordering = ('-created_at',)
+
+
+class AIRemediationProposal(models.Model, ModelMixin):
+    STATUSES = (
+        ('draft', '待提交'),
+        ('approval_pending', '待审批'),
+        ('approved', '已批准'),
+        ('rejected', '已驳回'),
+        ('cancelled', '已取消'),
+        ('expired', '已过期'),
+        ('executing', '执行登记中'),
+        ('succeeded', '已验证成功'),
+        ('failed', '验证失败'),
+        ('rolled_back', '已回滚'),
+    )
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    action_plan = models.ForeignKey(
+        AIActionPlan, models.PROTECT, related_name='remediation_proposals'
+    )
+    incident_room = models.ForeignKey(
+        'incident.IncidentRoom', models.SET_NULL,
+        related_name='remediation_proposals', null=True, blank=True
+    )
+    approval = models.ForeignKey(
+        'audit.ApprovalRequest', models.SET_NULL,
+        related_name='ai_remediation_proposals', null=True, blank=True
+    )
+    title = models.CharField(max_length=200)
+    summary = models.TextField()
+    proposed_action = models.CharField(max_length=64)
+    target_refs = models.TextField(default='[]')
+    risk_level = models.CharField(max_length=16, choices=AIActionPlan.RISK_LEVELS)
+    validation_plan = models.TextField()
+    rollback_plan = models.TextField(null=True, blank=True)
+    citation_refs = models.TextField(default='[]')
+    status = models.CharField(
+        max_length=16, choices=STATUSES, default='draft', db_index=True
+    )
+    execution_enabled = models.BooleanField(default=False)
+    created_by = models.ForeignKey(
+        'account.User', models.PROTECT, related_name='ai_remediation_proposals'
+    )
+    updated_by = models.ForeignKey(
+        'account.User', models.PROTECT, related_name='+', null=True, blank=True
+    )
+    created_at = models.DateTimeField(default=datetime.now, db_index=True)
+    updated_at = models.DateTimeField(default=datetime.now)
+
+    @property
+    def target_ref_list(self):
+        value = _json(self.target_refs, [])
+        return value if isinstance(value, list) else []
+
+    @property
+    def citation_ref_list(self):
+        value = _json(self.citation_refs, [])
+        return value if isinstance(value, list) else []
+
+    def approval_payload(self):
+        return {
+            'proposal_id': str(self.id),
+            'action_plan_id': str(self.action_plan_id),
+            'incident_room_id': str(self.incident_room_id) if self.incident_room_id else None,
+            'proposed_action': self.proposed_action,
+            'risk_level': self.risk_level,
+            'target_refs': self.target_ref_list,
+            'summary': self.summary,
+            'validation_plan': self.validation_plan,
+            'rollback_plan': self.rollback_plan or '',
+            'citation_refs': self.citation_ref_list,
+            'execution_enabled': False,
+        }
+
+    def to_view(self):
+        return {
+            'id': str(self.id),
+            'action_plan_id': str(self.action_plan_id),
+            'investigation_id': str(self.action_plan.investigation_id),
+            'incident_room_id': str(self.incident_room_id) if self.incident_room_id else None,
+            'approval_id': str(self.approval_id) if self.approval_id else None,
+            'approval': self.approval.to_view() if self.approval_id else None,
+            'title': self.title,
+            'summary': self.summary,
+            'proposed_action': self.proposed_action,
+            'target_refs': self.target_ref_list,
+            'risk_level': self.risk_level,
+            'validation_plan': self.validation_plan,
+            'rollback_plan': self.rollback_plan,
+            'citation_refs': self.citation_ref_list,
+            'status': self.status,
+            'execution_enabled': False,
+            'executions': [
+                item.to_view()
+                for item in self.executions.select_related('created_by', 'updated_by')
+            ],
+            'created_by': {
+                'id': self.created_by_id,
+                'name': self.created_by.nickname or self.created_by.username,
+            },
+            'created_at': self.created_at,
+            'updated_at': self.updated_at,
+        }
+
+    class Meta:
+        db_table = 'ai_remediation_proposals'
+        ordering = ('-updated_at', '-created_at')
+        index_together = (
+            ('created_by', 'status'),
+            ('action_plan', 'status'),
+            ('incident_room', 'status'),
+        )
+
+
+class AIRemediationExecution(models.Model, ModelMixin):
+    STATUSES = (
+        ('running', '执行登记中'),
+        ('succeeded', '已验证成功'),
+        ('failed', '验证失败'),
+        ('rolled_back', '已回滚'),
+    )
+    MODES = (
+        ('manual_record', '人工执行记录'),
+        ('platform_reference', '平台执行引用'),
+    )
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    proposal = models.ForeignKey(
+        AIRemediationProposal, models.PROTECT, related_name='executions'
+    )
+    approval = models.ForeignKey(
+        'audit.ApprovalRequest', models.PROTECT, related_name='ai_remediation_executions'
+    )
+    mode = models.CharField(max_length=32, choices=MODES, default='manual_record')
+    platform_action = models.CharField(max_length=64, null=True, blank=True)
+    execution_ref = models.CharField(max_length=100, null=True, blank=True, db_index=True)
+    platform_record = models.TextField(default='{}')
+    execution_summary = models.TextField()
+    validation_result = models.TextField(null=True, blank=True)
+    rollback_result = models.TextField(null=True, blank=True)
+    status = models.CharField(
+        max_length=16, choices=STATUSES, default='running', db_index=True
+    )
+    started_at = models.DateTimeField(default=datetime.now, db_index=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    created_by = models.ForeignKey(
+        'account.User', models.PROTECT, related_name='ai_remediation_executions'
+    )
+    updated_by = models.ForeignKey(
+        'account.User', models.PROTECT, related_name='+', null=True, blank=True
+    )
+    created_at = models.DateTimeField(default=datetime.now, db_index=True)
+    updated_at = models.DateTimeField(default=datetime.now)
+
+    def to_view(self):
+        return {
+            'id': str(self.id),
+            'proposal_id': str(self.proposal_id),
+            'approval_id': str(self.approval_id),
+            'mode': self.mode,
+            'platform_action': self.platform_action,
+            'execution_ref': self.execution_ref,
+            'platform_record': self.platform_record_data,
+            'execution_summary': self.execution_summary,
+            'validation_result': self.validation_result,
+            'rollback_result': self.rollback_result,
+            'status': self.status,
+            'started_at': self.started_at,
+            'completed_at': self.completed_at,
+            'created_by': {
+                'id': self.created_by_id,
+                'name': self.created_by.nickname or self.created_by.username,
+            },
+            'created_at': self.created_at,
+            'updated_at': self.updated_at,
+        }
+
+    @property
+    def platform_record_data(self):
+        value = _json(self.platform_record, {})
+        return value if isinstance(value, dict) else {}
+
+    class Meta:
+        db_table = 'ai_remediation_executions'
+        ordering = ('-started_at', '-created_at')
+        index_together = (
+            ('proposal', 'status'),
+            ('created_by', 'status'),
+        )

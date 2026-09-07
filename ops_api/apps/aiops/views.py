@@ -21,8 +21,17 @@ from .services import (
     PROMPT_VERSION,
     available_scope,
     collect_evidence,
+    create_remediation_execution,
+    create_remediation_proposal,
     execute_investigation,
+    lookup_platform_references,
     provider_name,
+    refresh_remediation_status,
+    remediation_action_options,
+    request_remediation_approval,
+    update_remediation_execution,
+    visible_remediation_executions,
+    visible_remediation_proposals,
 )
 
 
@@ -50,6 +59,9 @@ def _parse_scope(body):
         ),
         Argument('host_ids', type=list, default=[]),
         Argument('alert_id', type=int, required=False),
+        Argument('topology_node_ids', type=list, default=[]),
+        Argument('topology_edge_ids', type=list, default=[]),
+        Argument('topology_radius', type=int, default=1, filter=lambda x: 0 <= x <= 3),
     ).parse(body)
 
 
@@ -143,6 +155,147 @@ class AIScopeView(View):
         return _response(available_scope(request.user))
 
 
+class AIRemediationProposalView(View):
+    @auth('aiops.remediation.view|aiops.remediation.manage')
+    def get(self, request):
+        form, error = JsonParser(
+            Argument('id', type=uuid.UUID, required=False),
+            Argument('action_plan_id', type=uuid.UUID, required=False),
+            Argument('incident_room_id', type=uuid.UUID, required=False),
+            Argument('limit', type=int, default=100, filter=lambda x: 1 <= x <= 200),
+        ).parse(request.GET)
+        if error:
+            return _response(error=error)
+        proposals = visible_remediation_proposals(request.user)
+        if form.id:
+            proposal = proposals.filter(pk=form.id).first()
+            if not proposal:
+                return _response(error='未找到可访问的修复提案')
+            return _response(refresh_remediation_status(proposal).to_view())
+        if form.action_plan_id:
+            proposals = proposals.filter(action_plan_id=form.action_plan_id)
+        if form.incident_room_id:
+            proposals = proposals.filter(incident_room_id=form.incident_room_id)
+        return _response({
+            'actions': remediation_action_options(),
+            'proposals': [
+                refresh_remediation_status(item).to_view()
+                for item in proposals[:form.limit]
+            ],
+        })
+
+    @auth('aiops.remediation.manage')
+    def post(self, request):
+        form, error = JsonParser(
+            Argument('action_plan_id', type=uuid.UUID, help='请指定 AI 行动方案'),
+            Argument('incident_room_id', type=uuid.UUID, required=False),
+            Argument('proposed_action', required=False),
+            Argument('title', type=str, required=False),
+            Argument('summary', type=str, required=False),
+            Argument('target_refs', type=list, default=[]),
+            Argument('validation_plan', type=str, required=False),
+            Argument('rollback_plan', type=str, required=False),
+            Argument('citation_refs', type=list, default=[]),
+        ).parse(request.body)
+        if error:
+            return _response(error=error)
+        try:
+            proposal = create_remediation_proposal(
+                request.user, dict(form), request=request
+            )
+        except AIOpsError as exc:
+            return _response(error=str(exc))
+        return _response(proposal.to_view())
+
+
+class AIRemediationApprovalView(View):
+    @auth('aiops.remediation.manage')
+    def post(self, request):
+        form, error = JsonParser(
+            Argument('id', type=uuid.UUID, help='请指定修复提案')
+        ).parse(request.body)
+        if error:
+            return _response(error=error)
+        try:
+            proposal = request_remediation_approval(
+                request.user, form.id, request=request
+            )
+        except AIOpsError as exc:
+            return _response(error=str(exc))
+        return _response(refresh_remediation_status(proposal).to_view())
+
+
+class AIRemediationExecutionView(View):
+    @auth('aiops.remediation.view|aiops.remediation.manage')
+    def get(self, request):
+        form, error = JsonParser(
+            Argument('id', type=uuid.UUID, required=False),
+            Argument('proposal_id', type=uuid.UUID, required=False),
+            Argument('limit', type=int, default=100, filter=lambda x: 1 <= x <= 200),
+        ).parse(request.GET)
+        if error:
+            return _response(error=error)
+        executions = visible_remediation_executions(request.user)
+        if form.id:
+            execution = executions.filter(pk=form.id).first()
+            if not execution:
+                return _response(error='未找到可访问的修复执行记录')
+            return _response(execution.to_view())
+        if form.proposal_id:
+            executions = executions.filter(proposal_id=form.proposal_id)
+        return _response([item.to_view() for item in executions[:form.limit]])
+
+    @auth('aiops.remediation.manage')
+    def post(self, request):
+        form, error = JsonParser(
+            Argument('id', type=uuid.UUID, required=False),
+            Argument('proposal_id', type=uuid.UUID, required=False),
+            Argument('mode', required=False),
+            Argument('platform_action', required=False),
+            Argument('execution_ref', required=False),
+            Argument('execution_summary', type=str, required=False),
+            Argument('status', required=False),
+            Argument('validation_result', type=str, required=False),
+            Argument('rollback_result', type=str, required=False),
+        ).parse(request.body)
+        if error:
+            return _response(error=error)
+        try:
+            if form.id:
+                execution = update_remediation_execution(
+                    request.user, form.id, dict(form), request=request
+                )
+            else:
+                execution = create_remediation_execution(
+                    request.user, dict(form), request=request
+                )
+        except AIOpsError as exc:
+            return _response(error=str(exc))
+        return _response(execution.to_view())
+
+
+class AIRemediationPlatformReferenceView(View):
+    @auth('aiops.remediation.view|aiops.remediation.manage')
+    def get(self, request):
+        form, error = JsonParser(
+            Argument('platform_action', required=False),
+            Argument('keyword', required=False),
+            Argument('limit', type=int, default=50, filter=lambda x: 1 <= x <= 100),
+        ).parse(request.GET)
+        if error:
+            return _response(error=error)
+        try:
+            records = lookup_platform_references(
+                request.user,
+                platform_action=form.platform_action,
+                keyword=form.keyword,
+                limit=form.limit,
+            )
+        except AIOpsError as exc:
+            return _response(error=str(exc))
+        return _response(records)
+
+
 class AIEvidencePreviewView(View):
     @auth('aiops.investigation.run')
     def post(self, request):
@@ -153,6 +306,9 @@ class AIEvidencePreviewView(View):
         try:
             evidence = collect_evidence(
                 request.user, form.question, form.host_ids, form.alert_id,
+                topology_node_ids=form.topology_node_ids,
+                topology_edge_ids=form.topology_edge_ids,
+                topology_radius=form.topology_radius,
                 config=config,
             )
         except AIOpsError as exc:
@@ -167,6 +323,8 @@ class AIEvidencePreviewView(View):
             details={
                 'host_count': len(set(form.host_ids)),
                 'alert_id': form.alert_id,
+                'topology_node_count': len(set(form.topology_node_ids)),
+                'topology_edge_count': len(set(form.topology_edge_ids)),
                 'evidence_count': len(evidence),
                 'citations': [item['citation'] for item in evidence],
             },
@@ -234,6 +392,9 @@ class AIInvestigationView(View):
             try:
                 evidence = collect_evidence(
                     request.user, form.question, host_ids, form.alert_id,
+                    topology_node_ids=form.topology_node_ids,
+                    topology_edge_ids=form.topology_edge_ids,
+                    topology_radius=form.topology_radius,
                     config=config,
                 )
             except AIOpsError as exc:
@@ -258,6 +419,8 @@ class AIInvestigationView(View):
                 details={
                     'host_count': len(host_ids),
                     'alert_id': form.alert_id,
+                    'topology_node_count': len(set(form.topology_node_ids)),
+                    'topology_edge_count': len(set(form.topology_edge_ids)),
                     'api_format': config['api_format'],
                     'model': config['model'],
                     'prompt_version': PROMPT_VERSION,

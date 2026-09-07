@@ -11,6 +11,7 @@ from apps.assets.models import AccessGrant
 from apps.audit.models import AuditEvent
 from apps.config.models import Environment, Service
 from apps.host.models import Host
+from apps.observability import services as observability_services
 from apps.observability.models import AlertEvent, AlertTransition, MetricTarget
 from apps.observability.services import create_alertmanager_silence
 from apps.observability.views import (
@@ -220,6 +221,29 @@ class ObservabilityTest(TestCase):
         })
         invalid.user = self.user
         self.assertIn('不支持', body(MetricQueryView.as_view()(invalid))['error'])
+
+    def test_query_summary_accepts_legacy_job_with_current_host_label(self):
+        def prometheus_get(path, params):
+            query = params['query']
+            result = []
+            if 'up{job="spug-node"}' in query:
+                result = [{
+                    'metric': {
+                        'job': 'spug-node',
+                        'ops_platform_host_id': str(self.host.id),
+                    },
+                    'value': [1, '1'],
+                }]
+            return {'resultType': 'vector', 'result': result}
+
+        original = observability_services._prometheus_get
+        observability_services._prometheus_get = prometheus_get
+        try:
+            summary = observability_services.query_summary([self.host.id])
+        finally:
+            observability_services._prometheus_get = original
+
+        self.assertEqual(summary[str(self.host.id)]['availability'], '1')
 
     def test_targets_and_alerts_are_filtered_by_asset_authorization(self):
         event = AlertEvent.objects.create(

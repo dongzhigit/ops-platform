@@ -144,6 +144,17 @@ export default [{
     ]
   }]
 }, {
+  key: 'topology',
+  label: '拓扑诊断',
+  pages: [{
+    key: 'topology',
+    label: '拓扑图谱',
+    perms: [
+      {key: 'view', label: '查看拓扑'},
+      {key: 'manage', label: '管理拓扑'},
+    ]
+  }]
+}, {
   key: 'knowledge',
   label: '知识库',
   pages: [{
@@ -173,10 +184,28 @@ export default [{
       {key: 'run', label: '发起只读 AI 调查'},
     ]
   }, {
+    key: 'remediation',
+    label: 'AI 修复提案',
+    perms: [
+      {key: 'view', label: '查看 AI 修复提案'},
+      {key: 'manage', label: '创建并提交 AI 修复提案审批'},
+    ]
+  }, {
     key: 'config',
     label: '模型配置',
     perms: [
       {key: 'manage', label: '管理模型配置和密钥'},
+    ]
+  }]
+}, {
+  key: 'incident',
+  label: '事件作战室',
+  pages: [{
+    key: 'room',
+    label: '事件作战室',
+    perms: [
+      {key: 'view', label: '查看事件作战室'},
+      {key: 'manage', label: '管理事件作战室'},
     ]
   }]
 }, {

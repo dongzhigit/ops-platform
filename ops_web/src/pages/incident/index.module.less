@@ -1,0 +1,83 @@
+.toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 64px;
+  padding: 12px 16px;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+}
+
+.panel {
+  margin-top: 16px;
+  padding: 16px;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+}
+
+.section {
+  margin-top: 18px;
+}
+
+.sectionTitle {
+  margin-bottom: 10px;
+  color: #334155;
+  font-weight: 600;
+}
+
+.summaryGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.summaryItem {
+  min-height: 72px;
+  padding: 12px;
+  background: #f8fafc;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+}
+
+.summaryLabel {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.summaryValue {
+  margin-top: 6px;
+  color: #0f172a;
+  font-size: 20px;
+  font-weight: 600;
+}
+
+.timelineItem {
+  padding-bottom: 8px;
+}
+
+.timelineMeta {
+  margin-top: 4px;
+  color: #94a3b8;
+  font-size: 12px;
+}
+
+.postmortem {
+  min-height: 180px;
+}
+
+@media (max-width: 900px) {
+  .toolbar {
+    display: block;
+  }
+
+  .toolbar > div:last-child {
+    margin-top: 12px;
+  }
+
+  .summaryGrid {
+    grid-template-columns: 1fr;
+  }
+}

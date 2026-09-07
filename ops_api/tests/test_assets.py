@@ -10,6 +10,8 @@ from django.conf import settings
 from django.test import RequestFactory, TestCase, override_settings
 from django.urls import resolve
 
+from libs import AttrDict
+from libs.ssh import AuthenticationException
 from apps.account.models import Role, User
 from apps.account.utils import has_host_perm
 from apps.assets.encryption import CredentialEncryptionError, EnvelopeCipher
@@ -18,6 +20,7 @@ from apps.assets.views import CredentialView
 from apps.exec.models import ExecHistory
 from apps.exec.views import TaskView
 from apps.host.models import Group, Host
+from apps.host.views import HostView, _do_host_verify
 
 
 MASTER_KEY = base64.b64encode(b'm' * 32).decode('ascii')
@@ -155,6 +158,109 @@ class AssetAccessTest(TestCase):
         self.assertEqual(ssh.arguments['username'], 'deployer')
         self.assertEqual(ssh.arguments['password'], 'strong-password')
         self.assertIsNone(ssh.arguments['pkey'])
+
+    def test_host_password_retry_bypasses_existing_connection_profile(self):
+        group = Group.objects.create(name='production')
+        group.hosts.add(self.host2)
+        captured = {}
+
+        def fake_verify(form, connection_override=None):
+            captured['connection_override'] = connection_override
+            captured['password'] = form.password
+            form.pop('password')
+            return True
+
+        request = RequestFactory().post(
+            '/api/host/',
+            data=json.dumps({
+                'id': self.host2.id,
+                'group_ids': [group.id],
+                'name': self.host2.name,
+                'username': self.host2.username,
+                'hostname': self.host2.hostname,
+                'port': self.host2.port,
+                'desc': self.host2.desc,
+                'password': 'temporary-password',
+            }),
+            content_type='application/json',
+        )
+        request.user = self.admin
+
+        with patch('apps.host.views._do_host_verify', fake_verify):
+            response = HostView.as_view()(request)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(json.loads(response.content.decode('utf-8'))['error'])
+        self.assertIsNone(captured['connection_override'])
+        self.assertEqual(captured['password'], 'temporary-password')
+
+    def test_unmanaged_key_auth_failure_prompts_password_retry(self):
+        class FailingSSH:
+            def __init__(self, **kwargs):
+                pass
+
+            def __enter__(self):
+                raise AuthenticationException('bad key')
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        form = AttrDict(
+            hostname='10.0.0.2',
+            port=22,
+            username='root',
+            pkey='',
+            password='',
+        )
+        profile = {
+            'identity_id': None,
+            'username': 'root',
+            'credential_type': 'ssh_key',
+            'secret': PRIVATE_KEY,
+        }
+
+        with patch('apps.host.views.SSH', FailingSSH):
+            self.assertFalse(_do_host_verify(form, connection_override=profile))
+
+    def test_managed_identity_host_rejects_password_retry(self):
+        group = Group.objects.create(name='managed')
+        group.hosts.add(self.host2)
+        credential = self.make_credential(name='managed-key')
+        identity = Identity.objects.create(
+            name='managed-identity',
+            protocol='ssh',
+            username='ops',
+            credential=credential,
+            created_by=self.admin,
+        )
+        AssetIdentityBinding.bind(
+            host=self.host2,
+            identity=identity,
+            created_by=self.admin,
+            is_default=True,
+        )
+        request = RequestFactory().post(
+            '/api/host/',
+            data=json.dumps({
+                'id': self.host2.id,
+                'group_ids': [group.id],
+                'name': self.host2.name,
+                'username': self.host2.username,
+                'hostname': self.host2.hostname,
+                'port': self.host2.port,
+                'desc': self.host2.desc,
+                'password': 'temporary-password',
+            }),
+            content_type='application/json',
+        )
+        request.user = self.admin
+
+        with patch('apps.host.views._do_host_verify') as verify:
+            response = HostView.as_view()(request)
+
+        verify.assert_not_called()
+        data = json.loads(response.content.decode('utf-8'))
+        self.assertIn('托管身份', data['error'])
 
     def test_identity_scoped_grant_follows_default_binding(self):
         credential = self.make_credential()

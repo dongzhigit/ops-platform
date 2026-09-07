@@ -1,5 +1,6 @@
 import base64
 import json
+from datetime import datetime, timedelta
 from io import StringIO
 from unittest.mock import Mock, patch
 
@@ -9,9 +10,15 @@ from django.urls import resolve
 
 from apps.account.models import Role, User
 from apps.assets.models import AccessGrant
-from apps.audit.models import AuditEvent
+from apps.audit.models import ApprovalRequest, AuditEvent
 from apps.aiops.config import get_runtime_config
-from apps.aiops.models import AIActionPlan, AIInvestigation, AIProviderConfig
+from apps.aiops.models import (
+    AIActionPlan,
+    AIRemediationExecution,
+    AIInvestigation,
+    AIProviderConfig,
+    AIRemediationProposal,
+)
 from apps.aiops.services import (
     AIOpsError,
     call_provider,
@@ -22,12 +29,18 @@ from apps.aiops.views import (
     AIConfigView,
     AIEvidencePreviewView,
     AIInvestigationView,
+    AIRemediationApprovalView,
+    AIRemediationExecutionView,
+    AIRemediationPlatformReferenceView,
+    AIRemediationProposalView,
     AIScopeView,
 )
+from apps.exec.models import ExecHistory
 from apps.host.models import Host
 from apps.knowledge.models import KnowledgeMembership, KnowledgeSpace
 from apps.knowledge.services import create_document
 from apps.observability.models import AlertEvent, MetricTarget
+from apps.topology.models import TopologyEdge, TopologyNode
 
 
 def body(response):
@@ -58,10 +71,15 @@ class AIOpsTest(TestCase):
         role = Role.objects.create(
             name='ai-investigator',
             page_perms=json.dumps({
-                'aiops': {'investigation': ['view', 'run']},
+                'aiops': {
+                    'investigation': ['view', 'run'],
+                    'remediation': ['view', 'manage'],
+                },
                 'host': {'host': ['view']},
+                'exec': {'task': ['do']},
                 'monitor': {'metrics': ['view']},
                 'alarm': {'event': ['view']},
+                'topology': {'topology': ['view']},
                 'knowledge': {'document': ['view'], 'space': ['view']},
             }),
             created_by=self.admin,
@@ -202,6 +220,22 @@ class AIOpsTest(TestCase):
         self.assertIs(
             resolve('/v1/aiops/investigations/').func.view_class,
             AIInvestigationView,
+        )
+        self.assertIs(
+            resolve('/v1/aiops/remediations/').func.view_class,
+            AIRemediationProposalView,
+        )
+        self.assertIs(
+            resolve('/v1/aiops/remediations/approval/').func.view_class,
+            AIRemediationApprovalView,
+        )
+        self.assertIs(
+            resolve('/v1/aiops/remediations/executions/').func.view_class,
+            AIRemediationExecutionView,
+        )
+        self.assertIs(
+            resolve('/v1/aiops/remediations/platform-references/').func.view_class,
+            AIRemediationPlatformReferenceView,
         )
         request = self.request('get', '/v1/aiops/config/', self.user)
         response = AIConfigView.as_view()(request)
@@ -376,6 +410,56 @@ class AIOpsTest(TestCase):
                 '请分析 CPU 指标为什么异常',
                 [self.host.id],
             )
+
+    @patch('apps.topology.services.query_summary')
+    @patch('apps.aiops.services.query_summary')
+    def test_topology_scope_evidence_adds_related_host_scope(self, ai_summary, topology_summary):
+        ai_summary.return_value = {
+            str(self.host.id): {'availability': 1}
+        }
+        topology_summary.return_value = {
+            str(self.host.id): {'availability': 1}
+        }
+        host_node = TopologyNode.objects.create(
+            key='host:%s' % self.host.id,
+            type='host',
+            name=self.host.name,
+            source_type='host',
+            source_id=str(self.host.id),
+            status='unknown',
+            created_by=self.admin,
+        )
+        service_node = TopologyNode.objects.create(
+            key='service:web',
+            type='service',
+            name='web',
+            status='unknown',
+            created_by=self.admin,
+        )
+        TopologyEdge.objects.create(
+            source=service_node,
+            target=host_node,
+            type='deployed_on',
+            status='unknown',
+            created_by=self.admin,
+        )
+
+        evidence = collect_evidence(
+            self.user,
+            '请结合拓扑检查 web 服务影响范围',
+            topology_node_ids=[str(service_node.id)],
+        )
+        topology = [item for item in evidence if item['type'] == 'topology'][0]
+        citations = {item['citation'] for item in evidence}
+
+        self.assertEqual(topology['data']['host_ids'], [self.host.id])
+        self.assertIn(str(service_node.id), {
+            item['id'] for item in topology['data']['nodes']
+        })
+        self.assertIn(str(host_node.id), {
+            item['id'] for item in topology['data']['nodes']
+        })
+        self.assertIn('asset://host/%s' % self.host.id, citations)
 
     @patch('apps.aiops.services.Host.get_ssh')
     @patch('apps.aiops.services.query_summary')
@@ -596,3 +680,260 @@ class AIOpsTest(TestCase):
             ).count(),
             1,
         )
+
+    def make_action_plan(self):
+        citation = 'asset://host/%s' % self.host.id
+        investigation = AIInvestigation.objects.create(
+            created_by=self.user,
+            question='检查主机 CPU 告警并给出处理建议',
+            requested_host_ids='[%s]' % self.host.id,
+            status='completed',
+            provider='openai-compatible',
+            model='ops-model-v1',
+            prompt_version='readonly-v2',
+            evidence=json.dumps([{'citation': citation, 'type': 'asset'}]),
+            citations=json.dumps([citation]),
+            result=json.dumps(self.valid_result(citation)),
+        )
+        return AIActionPlan.objects.create(
+            investigation=investigation,
+            title='CPU 告警处置建议',
+            summary='由值班人员复核服务状态后再决定是否变更。',
+            risk_level='medium',
+            steps=json.dumps([{
+                'order': 1,
+                'action': '人工复核服务状态',
+                'targets': ['host:%s' % self.host.id],
+                'expected_result': '确认服务状态',
+                'validation': '人工确认告警恢复',
+                'rollback': '取消本次处置并继续观察',
+                'risk_level': 'medium',
+                'requires_approval': False,
+            }]),
+            rollback_plan='取消本次处置并继续观察。',
+            created_by=self.user,
+        )
+
+    def test_remediation_proposal_creates_pending_approval_without_execution(self):
+        plan = self.make_action_plan()
+        create = self.request('post', '/v1/aiops/remediations/', self.user, {
+            'action_plan_id': str(plan.id),
+            'proposed_action': 'service_restart_review',
+            'target_refs': ['host:%s' % self.host.id],
+            'validation_plan': '人工确认服务和告警均恢复。',
+            'rollback_plan': '取消服务重启建议，继续保持观察。',
+            'citation_refs': ['asset://host/%s' % self.host.id],
+        })
+        data = body(AIRemediationProposalView.as_view()(create))['data']
+        self.assertEqual(data['status'], 'draft')
+        self.assertFalse(data['execution_enabled'])
+        self.assertEqual(data['risk_level'], 'high')
+        self.assertEqual(AIRemediationProposal.objects.count(), 1)
+
+        submit = self.request('post', '/v1/aiops/remediations/approval/', self.user, {
+            'id': data['id'],
+        })
+        approved_data = body(AIRemediationApprovalView.as_view()(submit))['data']
+        self.assertEqual(approved_data['status'], 'approval_pending')
+        self.assertFalse(approved_data['execution_enabled'])
+        approval = ApprovalRequest.objects.get(pk=approved_data['approval_id'])
+        self.assertEqual(approval.action, 'aiops.remediation.propose')
+        self.assertEqual(approval.resource_type, 'ai_remediation')
+        self.assertEqual(approval.status, 'pending')
+        self.assertEqual(approval.risk_level, 'high')
+        self.assertFalse(approval.consumed_at)
+        self.assertEqual(json.loads(approval.resource_ids), [data['id']])
+        self.assertEqual(
+            AuditEvent.objects.filter(action='aiops.remediation.create').count(), 1
+        )
+        self.assertEqual(
+            AuditEvent.objects.filter(action='aiops.remediation.approval.request').count(), 1
+        )
+
+    def test_remediation_guards_reject_commands_critical_without_rollback_and_unauthorized_plan(self):
+        plan = self.make_action_plan()
+        command = self.request('post', '/v1/aiops/remediations/', self.user, {
+            'action_plan_id': str(plan.id),
+            'proposed_action': 'manual_check',
+            'title': 'systemctl restart nginx',
+            'target_refs': ['host:%s' % self.host.id],
+            'validation_plan': '人工确认',
+            'rollback_plan': '无需回滚',
+        })
+        self.assertIn('命令文本', body(AIRemediationProposalView.as_view()(command))['error'])
+
+        plan.rollback_plan = ''
+        plan.steps = json.dumps([{
+            'order': 1,
+            'action': '人工复核服务状态',
+            'targets': ['host:%s' % self.host.id],
+            'validation': '人工确认',
+            'risk_level': 'medium',
+        }])
+        plan.save(update_fields=('rollback_plan', 'steps'))
+        critical = self.request('post', '/v1/aiops/remediations/', self.user, {
+            'action_plan_id': str(plan.id),
+            'proposed_action': 'traffic_shift_review',
+            'target_refs': ['host:%s' % self.host.id],
+            'validation_plan': '人工确认',
+            'rollback_plan': '',
+        })
+        self.assertIn('回滚方案', body(AIRemediationProposalView.as_view()(critical))['error'])
+
+        outsider = self.request('post', '/v1/aiops/remediations/', self.outsider, {
+            'action_plan_id': str(plan.id),
+            'proposed_action': 'manual_check',
+            'target_refs': ['host:%s' % self.host.id],
+            'validation_plan': '人工确认',
+            'rollback_plan': '无需回滚',
+        })
+        self.assertIn('未找到可访问', body(AIRemediationProposalView.as_view()(outsider))['error'])
+
+    def make_approved_remediation(self):
+        plan = self.make_action_plan()
+        create = self.request('post', '/v1/aiops/remediations/', self.user, {
+            'action_plan_id': str(plan.id),
+            'proposed_action': 'service_restart_review',
+            'target_refs': ['host:%s' % self.host.id],
+            'validation_plan': '人工确认服务和告警均恢复。',
+            'rollback_plan': '取消服务重启建议，继续保持观察。',
+            'citation_refs': ['asset://host/%s' % self.host.id],
+        })
+        proposal_id = body(AIRemediationProposalView.as_view()(create))['data']['id']
+        submit = self.request('post', '/v1/aiops/remediations/approval/', self.user, {
+            'id': proposal_id,
+        })
+        approval_id = body(AIRemediationApprovalView.as_view()(submit))['data']['approval_id']
+        approval = ApprovalRequest.objects.get(pk=approval_id)
+        approval.status = 'approved'
+        approval.approved_until = datetime.now() + timedelta(minutes=30)
+        approval.save(update_fields=('status', 'approved_until'))
+        return AIRemediationProposal.objects.get(pk=proposal_id)
+
+    def test_remediation_execution_requires_approval_and_records_validation(self):
+        plan = self.make_action_plan()
+        create = self.request('post', '/v1/aiops/remediations/', self.user, {
+            'action_plan_id': str(plan.id),
+            'proposed_action': 'manual_check',
+            'target_refs': ['host:%s' % self.host.id],
+            'validation_plan': '人工确认',
+            'rollback_plan': '无需回滚',
+        })
+        draft_id = body(AIRemediationProposalView.as_view()(create))['data']['id']
+        denied = self.request('post', '/v1/aiops/remediations/executions/', self.user, {
+            'proposal_id': draft_id,
+            'execution_summary': '人工执行检查项',
+        })
+        self.assertIn('尚未审批通过', body(AIRemediationExecutionView.as_view()(denied))['error'])
+
+        proposal = self.make_approved_remediation()
+        history = ExecHistory.objects.create(
+            user=self.user,
+            digest='exec-task-1001',
+            interpreter='sh',
+            command='echo redacted',
+            host_ids=json.dumps([self.host.id]),
+            params='{}',
+        )
+        start = self.request('post', '/v1/aiops/remediations/executions/', self.user, {
+            'proposal_id': str(proposal.id),
+            'mode': 'platform_reference',
+            'platform_action': 'exec.run',
+            'execution_ref': history.digest,
+            'execution_summary': '已通过平台任务引用执行受控处理，等待人工验证。',
+        })
+        execution_data = body(AIRemediationExecutionView.as_view()(start))['data']
+        self.assertEqual(execution_data['status'], 'running')
+        self.assertEqual(execution_data['execution_ref'], 'exec-task-1001')
+        self.assertEqual(execution_data['platform_record']['record_id'], history.id)
+        self.assertNotIn('echo redacted', json.dumps(execution_data['platform_record']))
+        self.assertEqual(AIRemediationExecution.objects.count(), 1)
+        proposal.refresh_from_db()
+        self.assertEqual(proposal.status, 'executing')
+
+        invalid_done = self.request('post', '/v1/aiops/remediations/executions/', self.user, {
+            'id': execution_data['id'],
+            'status': 'succeeded',
+            'validation_result': '',
+        })
+        self.assertIn('缺少字段', body(AIRemediationExecutionView.as_view()(invalid_done))['error'])
+
+        done = self.request('post', '/v1/aiops/remediations/executions/', self.user, {
+            'id': execution_data['id'],
+            'status': 'succeeded',
+            'validation_result': '告警恢复，拓扑节点状态回落到健康。',
+        })
+        done_data = body(AIRemediationExecutionView.as_view()(done))['data']
+        self.assertEqual(done_data['status'], 'succeeded')
+        proposal.refresh_from_db()
+        self.assertEqual(proposal.status, 'succeeded')
+        self.assertEqual(
+            AuditEvent.objects.filter(action='aiops.remediation.execution.start').count(), 1
+        )
+        self.assertEqual(
+            AuditEvent.objects.filter(action='aiops.remediation.execution.succeeded').count(), 1
+        )
+
+    def test_remediation_execution_rejects_command_text_and_requires_platform_ref(self):
+        proposal = self.make_approved_remediation()
+        missing_ref = self.request('post', '/v1/aiops/remediations/executions/', self.user, {
+            'proposal_id': str(proposal.id),
+            'mode': 'platform_reference',
+            'platform_action': 'exec.run',
+            'execution_summary': '人工登记执行结果',
+        })
+        self.assertIn('执行引用', body(AIRemediationExecutionView.as_view()(missing_ref))['error'])
+
+        missing_action = self.request('post', '/v1/aiops/remediations/executions/', self.user, {
+            'proposal_id': str(proposal.id),
+            'mode': 'platform_reference',
+            'execution_ref': 'exec-task-1001',
+            'execution_summary': '人工登记执行结果',
+        })
+        self.assertIn('平台动作', body(AIRemediationExecutionView.as_view()(missing_action))['error'])
+
+        command = self.request('post', '/v1/aiops/remediations/executions/', self.user, {
+            'proposal_id': str(proposal.id),
+            'mode': 'manual_record',
+            'execution_summary': 'systemctl restart nginx',
+        })
+        self.assertIn('命令文本', body(AIRemediationExecutionView.as_view()(command))['error'])
+
+        invalid_ref = self.request('post', '/v1/aiops/remediations/executions/', self.user, {
+            'proposal_id': str(proposal.id),
+            'mode': 'platform_reference',
+            'platform_action': 'exec.run',
+            'execution_ref': 'missing-token',
+            'execution_summary': '登记平台执行记录。',
+        })
+        self.assertIn('未找到可访问', body(AIRemediationExecutionView.as_view()(invalid_ref))['error'])
+
+    def test_platform_reference_lookup_filters_by_visibility_and_redacts_payload(self):
+        history = ExecHistory.objects.create(
+            user=self.user,
+            digest='exec-visible-token',
+            interpreter='sh',
+            command='echo should-not-leak',
+            host_ids=json.dumps([self.host.id]),
+            params='{"secret": "should-not-leak"}',
+        )
+        ExecHistory.objects.create(
+            user=self.admin,
+            digest='exec-hidden-token',
+            interpreter='sh',
+            command='echo hidden',
+            host_ids=json.dumps([self.other_host.id]),
+            params='{}',
+        )
+        request = self.request(
+            'get',
+            '/v1/aiops/remediations/platform-references/',
+            self.user,
+            query={'platform_action': 'exec.run'},
+        )
+        data = body(AIRemediationPlatformReferenceView.as_view()(request))['data']
+        self.assertEqual(len(data), 1)
+        self.assertEqual(data[0]['ref'], history.digest)
+        serialized = json.dumps(data, ensure_ascii=False)
+        self.assertNotIn('should-not-leak', serialized)
+        self.assertNotIn('exec-hidden-token', serialized)
