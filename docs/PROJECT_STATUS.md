@@ -52,7 +52,8 @@ Last updated: 2026-09-08
 - Topology graph nodes now use compact pill nodes with concise name, type,
   port or PID metadata and readable 14px source title text; topology columns
   are widened to give business links more horizontal routing space, empty
-  columns are folded, edge labels appear only for the selected node's related
+  columns are folded, sparse columns are vertically centered against the
+  densest column, edge labels appear only for the selected node's related
   links, and full raw identifiers remain available in hover text and the
   right-side detail panel.
 - Topology graph canvas uses 60% as the default standard view and supports

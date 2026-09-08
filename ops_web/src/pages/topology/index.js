@@ -438,13 +438,18 @@ function buildLayout(nodes, edges, filter, mode, selectedHostId) {
   Object.values(columns).forEach(col => {
     col.items.sort((a, b) => a.name.localeCompare(b.name));
   });
+  const maxRows = Math.max(
+    ...Object.values(columns).map(col => col.items.length),
+    1,
+  );
   const positioned = [];
   Object.entries(columns).forEach(([type, col]) => {
+    const startY = col.y + Math.max(0, maxRows - col.items.length) * ROW_SPACING / 2;
     col.items.forEach((item, index) => {
       positioned.push({
         ...item,
         x: col.x,
-        y: col.y + index * ROW_SPACING,
+        y: startY + index * ROW_SPACING,
       });
     });
   });
@@ -455,10 +460,6 @@ function buildLayout(nodes, edges, filter, mode, selectedHostId) {
   const visibleEdges = filtered.edges.filter(edge => (
     edge.is_active && nodeMap[edge.source] && nodeMap[edge.target]
   ));
-  const maxRows = Math.max(
-    ...Object.values(columns).map(col => col.items.length),
-    1,
-  );
   return {
     nodes: positioned,
     nodeMap,
