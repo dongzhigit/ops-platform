@@ -5,7 +5,7 @@ Last updated: 2026-09-07
 ## Current baseline
 
 - Branch: `3.0`
-- Release: `ops-v0.1.0-alpha.40`
+- Release: `ops-v0.1.0-alpha.41`
 - Baseline commit: `b1ff1e748a877158a498cf72b9b816a4cf7eebba`
 - Status: internal pre-release; do not describe it as production-ready.
 - Origin: ops-platform with authorization, security, remote access,
@@ -82,6 +82,14 @@ Last updated: 2026-09-07
 - Runtime business links now preserve the concrete source process where
   available, so a Django/Python process calling MySQL or Redis is not collapsed
   into a generic host-level dependency.
+- Runtime scans now use non-interactive sudo when the managed host permits it,
+  parse Linux netstat `PID/program` ownership, and identify database or
+  middleware services by process name on non-standard ports such as MySQL
+  exposed on 13306.
+- Runtime discovery now supplements live sockets with sanitized Django settings
+  hints, so a Django process can keep a MySQL/PostgreSQL dependency in the
+  fixed topology even when no database socket is established at scan time; the
+  saved dependency status is still decided by runtime/probe evidence.
 
 ## Planned AI topology diagnosis
 

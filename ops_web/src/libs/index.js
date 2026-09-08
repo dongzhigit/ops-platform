@@ -10,4 +10,4 @@ export * from './functools';
 export * from './router';
 export const http = _http;
 export const history = _history;
-export const VERSION = '0.1.0-alpha.40';
+export const VERSION = '0.1.0-alpha.41';

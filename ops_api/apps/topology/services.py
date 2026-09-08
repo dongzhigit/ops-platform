@@ -38,10 +38,14 @@ STATUS_RANK = {
 }
 RUNTIME_TOPOLOGY_MARKER = '__OPS_TOPOLOGY_SECTION__'
 RUNTIME_TOPOLOGY_COMMAND = """
+SUDO=''
+if command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then
+  SUDO='sudo -n'
+fi
 printf '__OPS_TOPOLOGY_SECTION__ processes\\n'
-ps -eo pid,ppid,comm,stat 2>/dev/null | tail -n +2 | head -1000
+$SUDO ps -eo pid,ppid,comm,stat 2>/dev/null | tail -n +2 | head -1000
 printf '__OPS_TOPOLOGY_SECTION__ process_hints\\n'
-ps -eo pid=,args= 2>/dev/null | awk '
+$SUDO ps axww -o pid= -o args= 2>/dev/null | awk '
 {
   pid=$1
   line=tolower($0)
@@ -52,17 +56,34 @@ ps -eo pid=,args= 2>/dev/null | awk '
   else if (line ~ /nestjs/ || line ~ /express/ || line ~ /next/ || line ~ /nuxt/) hint="node"
   if (pid ~ /^[0-9]+$/ && hint != "") printf "%s %s\\n", pid, hint
 }' 2>/dev/null | head -1000
+printf '__OPS_TOPOLOGY_SECTION__ config_hints\\n'
+$SUDO ps axww -o pid= -o args= 2>/dev/null | awk '
+{
+  pid=$1
+  line=tolower($0)
+  if (pid ~ /^[0-9]+$/ && (line ~ /django/ || line ~ /manage\\.py/ || line ~ /gunicorn/ || line ~ /uwsgi/ || line ~ /uvicorn/ || line ~ /daphne/)) print pid
+}' 2>/dev/null | head -100 | while read pid; do
+  cwd=$($SUDO readlink "/proc/$pid/cwd" 2>/dev/null)
+  if [ -z "$cwd" ] || [ ! -d "$cwd" ]; then
+    continue
+  fi
+  find "$cwd" -maxdepth 4 -type f \\( -name 'settings*.py' -o -name 'config.py' -o -name '.env' \\) 2>/dev/null | head -40 | while IFS= read -r file; do
+    grep -HnEi "django\\.db\\.backends|['\\\"]HOST['\\\"]|['\\\"]PORT['\\\"]|DB_HOST|DB_PORT|MYSQL_HOST|MYSQL_PORT|POSTGRES_HOST|POSTGRES_PORT|REDIS_HOST|REDIS_PORT|redis://" "$file" 2>/dev/null | grep -Evi "PASSWORD|PASS|SECRET|KEY|TOKEN" | head -120 | while IFS= read -r line; do
+      printf "%s\\t%s\\n" "$pid" "$line"
+    done
+  done
+done | head -500
 printf '__OPS_TOPOLOGY_SECTION__ listeners\\n'
 if command -v ss >/dev/null 2>&1; then
-  ss -H -lntup 2>/dev/null | head -1000
+  $SUDO ss -H -lntup 2>/dev/null | head -1000
 else
-  netstat -lntup 2>/dev/null | tail -n +3 | head -1000
+  $SUDO netstat -lntup 2>/dev/null | tail -n +3 | head -1000
 fi
 printf '__OPS_TOPOLOGY_SECTION__ connections\\n'
 if command -v ss >/dev/null 2>&1; then
-  ss -H -tanp state established 2>/dev/null | head -1000
+  $SUDO ss -H -tanp state established 2>/dev/null | head -1000
 else
-  netstat -antp 2>/dev/null | grep ESTABLISHED | head -1000
+  $SUDO netstat -antp 2>/dev/null | grep ESTABLISHED | head -1000
 fi
 """
 RUNTIME_DEPENDENCY_PORTS = {
@@ -143,6 +164,86 @@ RUNTIME_FRAMEWORK_PROFILES = {
     'node': {
         'service': 'Node backend',
         'runtime_layer': 'backend',
+    },
+}
+RUNTIME_PROCESS_PROFILES = {
+    'mysqld': {
+        'kind': 'dependency',
+        'type': 'database',
+        'service': 'MySQL',
+        'runtime_layer': 'database',
+    },
+    'mariadbd': {
+        'kind': 'dependency',
+        'type': 'database',
+        'service': 'MySQL',
+        'runtime_layer': 'database',
+    },
+    'postgres': {
+        'kind': 'dependency',
+        'type': 'database',
+        'service': 'PostgreSQL',
+        'runtime_layer': 'database',
+    },
+    'postmaster': {
+        'kind': 'dependency',
+        'type': 'database',
+        'service': 'PostgreSQL',
+        'runtime_layer': 'database',
+    },
+    'mongod': {
+        'kind': 'dependency',
+        'type': 'database',
+        'service': 'MongoDB',
+        'runtime_layer': 'database',
+    },
+    'clickhouse-server': {
+        'kind': 'dependency',
+        'type': 'database',
+        'service': 'ClickHouse',
+        'runtime_layer': 'database',
+    },
+    'redis-server': {
+        'kind': 'dependency',
+        'type': 'middleware',
+        'service': 'Redis',
+        'runtime_layer': 'middleware',
+    },
+    'memcached': {
+        'kind': 'dependency',
+        'type': 'middleware',
+        'service': 'Memcached',
+        'runtime_layer': 'middleware',
+    },
+    'rabbitmq-server': {
+        'kind': 'dependency',
+        'type': 'middleware',
+        'service': 'RabbitMQ',
+        'runtime_layer': 'middleware',
+    },
+    'kafka': {
+        'kind': 'dependency',
+        'type': 'middleware',
+        'service': 'Kafka',
+        'runtime_layer': 'middleware',
+    },
+    'zookeeper': {
+        'kind': 'dependency',
+        'type': 'middleware',
+        'service': 'ZooKeeper',
+        'runtime_layer': 'middleware',
+    },
+    'etcd': {
+        'kind': 'dependency',
+        'type': 'middleware',
+        'service': 'etcd',
+        'runtime_layer': 'middleware',
+    },
+    'consul': {
+        'kind': 'dependency',
+        'type': 'middleware',
+        'service': 'Consul',
+        'runtime_layer': 'middleware',
     },
 }
 
@@ -496,6 +597,7 @@ def _split_runtime_sections(output):
     sections = {
         'processes': [],
         'process_hints': [],
+        'config_hints': [],
         'listeners': [],
         'connections': [],
     }
@@ -532,10 +634,21 @@ def _parse_processes(lines):
         processes[pid] = {
             'pid': pid,
             'ppid': int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else None,
-            'name': parts[2][:80],
+            'name': _runtime_clean_process_name(parts[2]),
             'stat': parts[3][:20] if len(parts) > 3 else '',
         }
     return processes
+
+
+def _runtime_clean_process_name(name):
+    name = str(name or '').strip()
+    if '/' in name:
+        name = name.rsplit('/', 1)[-1]
+    if name.startswith('./'):
+        name = name[2:]
+    if ':' in name:
+        name = name.split(':', 1)[0]
+    return name[:80]
 
 
 def _parse_process_hints(lines):
@@ -550,10 +663,145 @@ def _parse_process_hints(lines):
     return hints
 
 
+def _runtime_extract_config_value(line):
+    line = str(line or '').strip()
+    match = re.search(r'[:=]\s*[ruRU]?["\']([^"\']{0,160})["\']', line)
+    if match:
+        return match.group(1).strip()
+    match = re.search(r'[:=]\s*([A-Za-z0-9_.:/-]{1,160})', line)
+    if match:
+        return match.group(1).strip().strip(',')
+    return ''
+
+
+def _runtime_database_profile_from_service(service):
+    profiles = {
+        'mysql': ('database', 'MySQL', 3306),
+        'postgresql': ('database', 'PostgreSQL', 5432),
+        'postgres': ('database', 'PostgreSQL', 5432),
+        'oracle': ('database', 'Oracle', 1521),
+        'redis': ('middleware', 'Redis', 6379),
+    }
+    item = profiles.get(str(service or '').strip().lower())
+    if not item:
+        return None
+    node_type, service_name, default_port = item
+    return {
+        'kind': 'dependency',
+        'type': node_type,
+        'service': service_name,
+        'runtime_layer': node_type,
+        'detected_by': 'config',
+        'selected': True,
+        'default_port': default_port,
+    }
+
+
+def _parse_runtime_config_hints(lines):
+    states = {}
+    records = []
+
+    def append_state(state):
+        profile = _runtime_database_profile_from_service(state.get('service'))
+        if not profile:
+            return
+        port = state.get('port') or profile['default_port']
+        address = (state.get('address') or '127.0.0.1').strip()
+        records.append({
+            'pid': state['pid'],
+            'address': address,
+            'port': port,
+            'protocol': 'tcp',
+            'profile': profile,
+            'file': state.get('file') or '',
+        })
+
+    for line in lines:
+        parts = str(line or '').split('\t', 1)
+        if len(parts) != 2 or not parts[0].isdigit():
+            continue
+        pid = int(parts[0])
+        match = re.match(r'(.+?):(\d+):(.*)', parts[1])
+        if not match:
+            continue
+        file_path, _, content = match.groups()
+        stripped = content.strip()
+        if not stripped or stripped.startswith('#'):
+            continue
+        lower = stripped.lower()
+        key = (pid, file_path)
+        state = states.setdefault(key, {
+            'pid': pid,
+            'file': file_path[:255],
+            'service': '',
+            'address': '',
+            'port': None,
+        })
+        if 'redis://' in lower:
+            redis = re.search(r'redis://([^:/\'"]+):(\d+)', stripped)
+            if redis:
+                profile = _runtime_database_profile_from_service('redis')
+                records.append({
+                    'pid': pid,
+                    'address': redis.group(1),
+                    'port': int(redis.group(2)),
+                    'protocol': 'tcp',
+                    'profile': profile,
+                    'file': file_path[:255],
+                })
+                continue
+        elif 'mysql' in lower and (
+                'engine' in lower or 'django.db.backends' in lower):
+            state['service'] = 'mysql'
+        elif 'postgres' in lower and (
+                'engine' in lower or 'django.db.backends' in lower):
+            state['service'] = 'postgresql'
+        elif 'oracle' in lower and (
+                'engine' in lower or 'django.db.backends' in lower):
+            state['service'] = 'oracle'
+        if re.search(r'["\']HOST["\']|(^|_)HOST\s*=', stripped):
+            value = _runtime_extract_config_value(stripped)
+            if value:
+                state['address'] = value
+        if re.search(r'["\']PORT["\']|(^|_)PORT\s*=', stripped):
+            value = _runtime_extract_config_value(stripped)
+            if value and str(value).isdigit():
+                state['port'] = int(value)
+
+    hints = []
+    seen = set()
+    for state in states.values():
+        append_state(state)
+    for record in records:
+        profile = record.get('profile')
+        if not profile:
+            continue
+        port = record.get('port') or profile['default_port']
+        address = (record.get('address') or '127.0.0.1').strip()
+        key = (record['pid'], profile['service'], address, port)
+        if key in seen:
+            continue
+        seen.add(key)
+        hints.append({
+            'pid': record['pid'],
+            'address': address,
+            'port': port,
+            'protocol': 'tcp',
+            'profile': profile,
+            'file': record.get('file') or '',
+        })
+    return hints
+
+
 def _extract_process_refs(line):
     refs = []
     for name, pid in re.findall(r'\("([^"]{1,80})",pid=(\d+)', line or ''):
-        refs.append({'name': name, 'pid': int(pid)})
+        refs.append({'name': _runtime_clean_process_name(name), 'pid': int(pid)})
+    for pid, name in re.findall(r'(?:^|\s)(\d+)/(\S+)', line or ''):
+        refs.append({
+            'name': _runtime_clean_process_name(name),
+            'pid': int(pid),
+        })
     return refs
 
 
@@ -795,10 +1043,16 @@ def _runtime_dependency_for_endpoint(endpoint, protocol):
 
 def _runtime_process_profile(process):
     process = process or {}
+    name = str(process.get('name') or '').strip().lower()
+    if name in RUNTIME_PROCESS_PROFILES:
+        profile = RUNTIME_PROCESS_PROFILES[name]
+        return dict(profile, detected_by='process', selected=True)
     hint = str(process.get('framework') or '').strip().lower()
     if hint in RUNTIME_FRAMEWORK_PROFILES:
         profile = RUNTIME_FRAMEWORK_PROFILES[hint]
         return {
+            'kind': 'application',
+            'type': 'port',
             'service': profile['service'],
             'runtime_layer': profile['runtime_layer'],
             'detected_by': 'framework',
@@ -807,7 +1061,11 @@ def _runtime_process_profile(process):
     layer = _runtime_process_layer(process.get('name'))
     if not layer:
         return None
+    kind = 'dependency' if layer in ('database', 'middleware') else 'application'
+    node_type = layer if kind == 'dependency' else 'port'
     return {
+        'kind': kind,
+        'type': node_type,
         'service': _runtime_service_label(
             'Application', layer, process.get('name')
         ),
@@ -850,6 +1108,12 @@ def _runtime_endpoint_host_id(endpoint, current_host_id, known_host_ips):
     if address in RUNTIME_LOCAL_ADDRESSES:
         return current_host_id
     return known_host_ips.get(address)
+
+
+def _runtime_endpoint_is_current_host(endpoint, current_host_id, known_host_ips):
+    return _runtime_endpoint_host_id(
+        endpoint, current_host_id, known_host_ips
+    ) == current_host_id
 
 
 def _runtime_is_backend_port(port):
@@ -942,10 +1206,12 @@ def _runtime_listener_profile(listener, processes, current_host_id,
         process_profile = _runtime_process_profile(process)
         if process_profile:
             return {
-                'kind': 'application',
-                'type': 'port',
+                'kind': process_profile.get('kind') or 'application',
+                'type': process_profile.get('type') or 'port',
                 'service': process_profile['service'],
                 'runtime_layer': process_profile['runtime_layer'],
+                'detected_by': process_profile.get('detected_by'),
+                'selected': process_profile.get('selected', True),
             }
     application = _runtime_application_for_endpoint(
         local, listener['protocol'], current_host_id, known_host_ips,
@@ -995,8 +1261,77 @@ def _runtime_existing_port_node(endpoint, protocol, current_host_id, port_nodes,
     ).first()
 
 
+def _runtime_listener_profile_for_endpoint(endpoint, protocol, current_host_id,
+                                           known_host_ips, listener_profiles):
+    if not endpoint or not listener_profiles:
+        return None
+    host_id = _runtime_endpoint_host_id(endpoint, current_host_id, known_host_ips)
+    if not host_id:
+        return None
+    return listener_profiles.get((host_id, protocol, endpoint['port']))
+
+
+def _runtime_profile_selected(profile):
+    return bool(profile and profile.get('selected', True))
+
+
+def _runtime_process_listener_endpoint(pid, listeners):
+    for listener in listeners:
+        for process_ref in listener.get('processes') or []:
+            if process_ref.get('pid') == pid:
+                return listener.get('local')
+    return None
+
+
+def _runtime_config_connections(config_hints, processes, listeners):
+    connections = []
+    seen = set()
+    sorted_hints = sorted(
+        config_hints,
+        key=lambda hint: 0 if _runtime_process_listener_endpoint(
+            hint.get('pid'), listeners
+        ) else 1,
+    )
+    for hint in sorted_hints:
+        pid = hint.get('pid')
+        if pid not in processes:
+            continue
+        profile = hint.get('profile') or {}
+        local = _runtime_process_listener_endpoint(pid, listeners) or {
+            'address': '127.0.0.1',
+            'port': 0,
+        }
+        peer = {
+            'address': hint.get('address') or '127.0.0.1',
+            'port': int(hint.get('port') or 0),
+        }
+        if not peer['port']:
+            continue
+        key = (
+            pid, profile.get('service'), peer['address'], peer['port'],
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        connections.append(({
+            'protocol': hint.get('protocol') or 'tcp',
+            'state': 'CONFIGURED',
+            'local': local,
+            'peer': peer,
+            'processes': [{
+                'pid': pid,
+                'name': processes[pid].get('name') or 'process',
+            }],
+            'business_target': 'peer',
+            'detected_by': 'config',
+            'config_file': hint.get('file') or '',
+        }, profile))
+    return connections
+
+
 def _runtime_business_connection(connection, processes, current_host_id,
-                                 known_host_ips, relevant_listener_keys=None):
+                                 known_host_ips, relevant_listener_keys=None,
+                                 listener_profiles=None):
     peer = connection.get('peer')
     dependency = _runtime_dependency_for_endpoint(peer, connection['protocol'])
     if dependency:
@@ -1006,7 +1341,8 @@ def _runtime_business_connection(connection, processes, current_host_id,
         local_dependency = _runtime_dependency_for_endpoint(
             connection.get('local'), connection['protocol']
         )
-        if local_dependency and peer and str(peer.get('address')) not in RUNTIME_LOCAL_ADDRESSES:
+        if local_dependency and peer and not _runtime_endpoint_is_current_host(
+                peer, current_host_id, known_host_ips):
             connection['business_target'] = 'local'
             return local_dependency
         return None
@@ -1016,20 +1352,40 @@ def _runtime_business_connection(connection, processes, current_host_id,
     if application:
         connection['business_target'] = 'peer'
         return application
+    listener_profile = _runtime_listener_profile_for_endpoint(
+        peer, connection['protocol'], current_host_id, known_host_ips,
+        listener_profiles
+    )
+    if _runtime_profile_selected(listener_profile):
+        connection['business_target'] = 'peer'
+        return listener_profile
     local = connection.get('local')
     local_dependency = _runtime_dependency_for_endpoint(local, connection['protocol'])
-    if local_dependency and peer and str(peer.get('address')) not in RUNTIME_LOCAL_ADDRESSES:
+    if local_dependency and peer and not _runtime_endpoint_is_current_host(
+            peer, current_host_id, known_host_ips):
         connection['business_target'] = 'local'
         return local_dependency
+    local_listener_profile = _runtime_listener_profile_for_endpoint(
+        local, connection['protocol'], current_host_id, known_host_ips,
+        listener_profiles
+    )
+    if _runtime_profile_selected(local_listener_profile) and peer and not _runtime_endpoint_is_current_host(
+            peer, current_host_id, known_host_ips):
+        connection['business_target'] = 'local'
+        return local_listener_profile
     existing_local_host_id = _runtime_endpoint_host_id(
         local, current_host_id, known_host_ips
     )
     local_listener_key = (
         existing_local_host_id, connection['protocol'], local['port']
     ) if existing_local_host_id and local else None
-    if relevant_listener_keys and local_listener_key in relevant_listener_keys and peer and str(peer.get('address')) not in RUNTIME_LOCAL_ADDRESSES:
+    if relevant_listener_keys and local_listener_key in relevant_listener_keys and peer and not _runtime_endpoint_is_current_host(
+            peer, current_host_id, known_host_ips):
+        if listener_profiles and not _runtime_profile_selected(
+                listener_profiles.get(local_listener_key)):
+            return None
         connection['business_target'] = 'local'
-        return {
+        return listener_profiles.get(local_listener_key) if listener_profiles and local_listener_key in listener_profiles else {
             'kind': 'application',
             'type': 'port',
             'service': 'Application',
@@ -1044,8 +1400,11 @@ def _runtime_business_connection(connection, processes, current_host_id,
         existing_host_id, connection['protocol'], peer['port']
     ) if existing_host_id else None
     if relevant_listener_keys and listener_key in relevant_listener_keys:
+        if listener_profiles and not _runtime_profile_selected(
+                listener_profiles.get(listener_key)):
+            return None
         connection['business_target'] = 'peer'
-        return {
+        return listener_profiles.get(listener_key) if listener_profiles and listener_key in listener_profiles else {
             'kind': 'application',
             'type': 'port',
             'service': 'Application',
@@ -1227,6 +1586,7 @@ def _runtime_scan_recommendations(host_id, processes, listeners, listener_profil
                 'runtime_layer': profile.get('runtime_layer'),
                 'connection_kind': profile['kind'],
                 'service': profile['service'],
+                'detected_by': connection.get('detected_by') or profile.get('detected_by'),
                 'count': 0,
                 'selected': True,
             }
@@ -1415,6 +1775,9 @@ def sync_runtime_topology(user, host_ids, dry_run=False,
             for pid, hint in process_hints.items():
                 if pid in processes:
                     processes[pid]['framework'] = hint
+            config_hints = _parse_runtime_config_hints(
+                sections['config_hints']
+            )
             listeners = _parse_sockets(sections['listeners'])
             connections = _parse_sockets(sections['connections'])
             for socket in listeners + connections:
@@ -1444,13 +1807,31 @@ def sync_runtime_topology(user, host_ids, dry_run=False,
 
             business_connections = []
             dependency_connections = []
+            connection_keys = set()
             for connection in connections:
                 profile = _runtime_business_connection(
                     connection, processes, host.id, known_host_ips,
-                    relevant_listener_keys
+                    relevant_listener_keys, listener_profiles
                 )
                 if not profile:
                     continue
+                connection_key = _runtime_connection_monitor_key(
+                    host.id, connection, profile
+                )
+                connection_keys.add(connection_key)
+                business_connections.append((connection, profile))
+                if profile['kind'] == 'dependency':
+                    dependency_connections.append(connection)
+                for process_ref in connection['processes']:
+                    business_pids.add(process_ref['pid'])
+            for connection, profile in _runtime_config_connections(
+                    config_hints, processes, listeners):
+                connection_key = _runtime_connection_monitor_key(
+                    host.id, connection, profile
+                )
+                if connection_key in connection_keys:
+                    continue
+                connection_keys.add(connection_key)
                 business_connections.append((connection, profile))
                 if profile['kind'] == 'dependency':
                     dependency_connections.append(connection)
@@ -1466,6 +1847,7 @@ def sync_runtime_topology(user, host_ids, dry_run=False,
             observed_connection_keys = {
                 _runtime_connection_monitor_key(host.id, connection, profile)
                 for connection, profile in business_connections
+                if connection.get('state') != 'CONFIGURED'
             }
             selected_listener_profiles = {}
             if selected_service_keys is not None:
@@ -1801,6 +2183,9 @@ def sync_runtime_topology(user, host_ids, dry_run=False,
                                 if display_profile['kind'] == 'dependency' else '',
                                 runtime_layer=display_profile.get('runtime_layer'),
                                 service=display_profile['service'],
+                                detected_by=connection.get('detected_by') or
+                                display_profile.get('detected_by'),
+                                config_file=connection.get('config_file') or '',
                                 probe_host_id=host.id,
                                 probe_address=probe_target.get('address'),
                                 probe_port=probe_target.get('port'),

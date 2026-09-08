@@ -1,6 +1,6 @@
 {
   "name": "ops-platform",
-  "version": "0.1.0-alpha.40",
+  "version": "0.1.0-alpha.41",
   "private": true,
   "dependencies": {
     "@ant-design/icons": "^4.3.0",

@@ -1,6 +1,6 @@
 # M6 AI 拓扑诊断与事件作战室
 
-版本：`0.1.0-alpha.40`
+版本：`0.1.0-alpha.41`
 记录日期：2026-09-07
 
 ## 目标
@@ -244,12 +244,18 @@
 - 对 Python/Gunicorn/uWSGI/Uvicorn/Daphne 等进程增加脱敏框架指纹，远端只返回 `PID -> django` 等标签，不返回完整命令行参数。
 - 所有监听端口都会进入候选服务列表；无法识别的端口显示为 `TCP Service` 且默认不勾选，由运维人员人工确认。
 - 业务连接保存时优先保留具体来源进程，只有无法确认 PID 时才回退到主机或端口节点。
+- 目标主机支持免密 `sudo -n` 时，运行态扫描会自动使用 sudo 读取 netstat/ps 的 PID 与进程名，仍只保存脱敏后的进程名和框架标签。
+- 对 `mysqld`、`redis-server` 等数据库/中间件进程增加服务画像，非标准端口也能按进程识别为 MySQL、Redis 等服务。
+- Django 进程没有实时数据库连接时，运行态扫描会读取 settings/config/.env 中不含密码的 ENGINE/HOST/PORT 线索，生成配置发现的固定数据库依赖，保存后的健康状态仍由运行态连接或端口探测确认。
 
 验收标准：
 - 可以展示 `前端 -> 后端 API -> MySQL/Redis` 等业务链路。
 - Python 启动的 Django 项目应显示为 Django 后端服务，而不是被泛化成普通 python 进程或遗漏。
 - 未命中内置服务规则的监听端口仍可在候选列表中看到，避免自定义端口服务被漏扫。
 - Django/Python 进程连接 MySQL/Redis 时，拓扑连线来源应指向该进程节点，而不是被强制聚合成主机节点。
+- 普通 netstat 无法看到 PID、但 `sudo -n netstat` 可看到 PID 时，应能生成具体进程到数据库/中间件的连接。
+- MySQL 监听在 `13306` 等非标准端口时，只要能看到 `mysqld` 进程，应识别为 MySQL。
+- Django settings 中存在 MySQL/PostgreSQL HOST/PORT 时，即使扫描瞬间没有 ESTABLISHED socket，也应给出可人工确认的业务依赖连接。
 - 随机浏览器回连、临时高端口连接和系统采集进程不进入默认业务拓扑。
 - 新增主机时的自动发现不保存密码、密钥、命令行参数、环境变量或配置密文。
 - AI 仍只基于已授权证据做诊断，不直接执行命令或自动变更拓扑确认结果。
@@ -352,6 +358,8 @@
 - 2026-09-05：运行态拓扑收敛为业务依赖视图，仅将进程连接到 MySQL、Redis、PostgreSQL、MongoDB、RabbitMQ、Kafka 等依赖端口的连接写入默认诊断拓扑，普通已建立 TCP 连接不再铺满主图。
 - 2026-09-05：运行态拓扑扩展为业务全链路识别，自动保留 Nginx/Vue/Node 前端、Python/Go/Java/Node 后端、数据库和中间件之间的连接，并继续过滤随机客户端端口、SSH、监控 exporter 等非业务连接；新增主机验证成功后可自动触发业务拓扑发现，再由人工确认和补充。
 - 2026-09-07：运行态扫描补充 Django 脱敏框架指纹识别，远端只输出 PID 与框架标签，不输出完整命令行；Python/Gunicorn/uWSGI/Uvicorn/Daphne 承载的 Django 监听端口会在候选服务和拓扑节点中显示为 Django；未识别监听端口也进入候选服务列表但默认不勾选；业务连接来源保留具体进程，避免显示成笼统的主机连接数据库。
+- 2026-09-07：运行态扫描在目标主机允许免密 sudo 时自动使用 `sudo -n` 采集 netstat/ps 的 PID 归属，补充 netstat `PID/进程名` 格式解析，并按 `mysqld`、`redis-server` 等进程识别非标准端口上的数据库/中间件服务。
+- 2026-09-07：运行态扫描补充脱敏 Django 配置依赖发现，当没有实时数据库 socket 时，仍可从 settings/config/.env 的 ENGINE/HOST/PORT 线索推荐 Django 到 MySQL/PostgreSQL 的固定业务链路；未知 TCP Service 监听不会自动生成业务连接。
 
 ## 边界
 

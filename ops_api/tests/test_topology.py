@@ -474,6 +474,148 @@ __OPS_TOPOLOGY_SECTION__ connections
         self.assertIn('Redis', redis_calls[0]['label'])
         self.assertEqual(redis_calls[0]['metadata']['target_side'], 'local')
 
+    def test_runtime_scan_maps_netstat_pid_and_nonstandard_mysql_port(self):
+        class FakeSSH:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def exec_command_raw(self, command):
+                self.assertIn('sudo -n netstat', command)
+                return 0, """__OPS_TOPOLOGY_SECTION__ processes
+2508 1 python S
+1706 1 mysqld S
+1900 1 smbd S
+__OPS_TOPOLOGY_SECTION__ process_hints
+2508 django
+__OPS_TOPOLOGY_SECTION__ listeners
+tcp6 0 0 :::13306 :::* LISTEN 1706/mysqld
+tcp 0 0 192.168.18.226:445 0.0.0.0:* LISTEN 1900/smbd
+__OPS_TOPOLOGY_SECTION__ connections
+tcp 0 0 192.168.18.226:59456 192.168.18.226:13306 ESTABLISHED 2508/python
+tcp6 0 0 192.168.18.226:13306 192.168.18.226:59456 ESTABLISHED 1706/mysqld
+tcp 0 0 192.168.18.226:445 192.168.30.106:52300 ESTABLISHED 1900/smbd
+"""
+
+        original = Host.get_ssh
+        Host.get_ssh = lambda host: FakeSSH()
+        try:
+            preview = topology_services.sync_runtime_topology(
+                self.admin, [self.host.id], dry_run=True
+            )[0]
+            topology_services.sync_runtime_topology(
+                self.admin,
+                [self.host.id],
+                selected_service_keys=[
+                    item['key']
+                    for item in preview['recommendations']['services']
+                    if item['selected']
+                ],
+                selected_connection_keys=[
+                    item['key']
+                    for item in preview['recommendations']['connections']
+                    if item['selected']
+                ],
+            )
+        finally:
+            Host.get_ssh = original
+
+        self.assertEqual(preview['business_connection_count'], 1)
+        service = preview['recommendations']['services'][0]
+        self.assertEqual(service['port'], 13306)
+        self.assertEqual(service['name'], 'MySQL 13306/tcp')
+        self.assertEqual(service['detected_by'], 'process')
+        tcp_services = [
+            item for item in preview['recommendations']['services']
+            if item['port'] == 445
+        ]
+        self.assertEqual(tcp_services[0]['name'], 'TCP Service 445/tcp')
+        self.assertFalse(tcp_services[0]['selected'])
+        connection = preview['recommendations']['connections'][0]
+        self.assertEqual(connection['source'], 'python[2508]')
+        self.assertEqual(connection['service'], 'MySQL')
+
+        graph = topology_services.build_topology_graph(self.admin)
+        nodes = {item['key']: item for item in graph['nodes']}
+        mysql_key = 'runtime:host:%s:port:tcp:13306' % self.host.id
+        django_key = 'runtime:host:%s:process:2508' % self.host.id
+        self.assertEqual(nodes[mysql_key]['metadata']['service'], 'MySQL')
+        self.assertEqual(nodes[django_key]['metadata']['service'], 'Django')
+        calls = [item for item in graph['edges'] if item['type'] == 'calls']
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]['source'], nodes[django_key]['id'])
+        self.assertEqual(calls[0]['target'], nodes[mysql_key]['id'])
+
+    def test_runtime_scan_uses_django_config_without_open_socket(self):
+        class FakeSSH:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def exec_command_raw(self, command):
+                return 0, """__OPS_TOPOLOGY_SECTION__ processes
+2493 1 python S
+2508 1 python S
+1706 1 mysqld S
+__OPS_TOPOLOGY_SECTION__ process_hints
+2493 django
+2508 django
+__OPS_TOPOLOGY_SECTION__ config_hints
+2493\t/home/app/settings.py:10:'ENGINE': 'django.db.backends.mysql',
+2493\t/home/app/settings.py:11:'HOST': '192.168.18.226',
+2493\t/home/app/settings.py:12:'PORT': '13306',
+2508\t/home/app/settings.py:10:'ENGINE': 'django.db.backends.mysql',
+2508\t/home/app/settings.py:11:'HOST': '192.168.18.226',
+2508\t/home/app/settings.py:12:'PORT': '13306',
+__OPS_TOPOLOGY_SECTION__ listeners
+tcp 0 0 0.0.0.0:8282 0.0.0.0:* LISTEN 2508/python
+tcp6 0 0 :::13306 :::* LISTEN 1706/mysqld
+__OPS_TOPOLOGY_SECTION__ connections
+"""
+
+        original = Host.get_ssh
+        Host.get_ssh = lambda host: FakeSSH()
+        try:
+            preview = topology_services.sync_runtime_topology(
+                self.admin, [self.host.id], dry_run=True
+            )[0]
+            topology_services.sync_runtime_topology(
+                self.admin,
+                [self.host.id],
+                selected_service_keys=[
+                    item['key']
+                    for item in preview['recommendations']['services']
+                    if item['selected']
+                ],
+                selected_connection_keys=[
+                    item['key']
+                    for item in preview['recommendations']['connections']
+                    if item['selected']
+                ],
+            )
+        finally:
+            Host.get_ssh = original
+
+        self.assertEqual(preview['business_connection_count'], 1)
+        connection = preview['recommendations']['connections'][0]
+        self.assertEqual(connection['source'], 'python[2508]')
+        self.assertEqual(connection['service'], 'MySQL')
+        self.assertEqual(connection['detected_by'], 'config')
+
+        graph = topology_services.build_topology_graph(self.admin)
+        nodes = {item['key']: item for item in graph['nodes']}
+        mysql_key = 'runtime:host:%s:port:tcp:13306' % self.host.id
+        django_key = 'runtime:host:%s:process:2508' % self.host.id
+        calls = [item for item in graph['edges'] if item['type'] == 'calls']
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]['source'], nodes[django_key]['id'])
+        self.assertEqual(calls[0]['target'], nodes[mysql_key]['id'])
+        self.assertEqual(calls[0]['metadata']['detected_by'], 'config')
+
     def test_sources_and_crud_build_visible_graph_edge(self):
         AccessGrant.objects.create(
             subject_user=self.user,
