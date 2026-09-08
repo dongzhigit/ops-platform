@@ -554,27 +554,36 @@ function applyDragPositions(layout, positions) {
 }
 
 
-function Node({node, selected, dragging, onSelect, onDragStart}) {
+function Node({node, selected, highlighted, dragging, onSelect, onDragStart}) {
   const meta = statusMeta[node.status] || statusMeta.unknown;
   const shortMeta = nodeMetaText(node);
-  const detail = [node.name, shortMeta, node.key, node.description].filter(Boolean).join('\n');
+  const detail = (
+    <div className={styles.nodeTooltip}>
+      <div className={styles.nodeTooltipTitle}>{node.name}</div>
+      <div><span>摘要：</span>{shortMeta || '--'}</div>
+      <div><span>标识：</span>{node.key || '--'}</div>
+      <div><span>状态：</span>{meta.label}</div>
+      {node.description && <div><span>描述：</span>{node.description}</div>}
+    </div>
+  );
   return (
-    <button
-      type="button"
-      className={`${styles.node} ${styles[node.status || 'unknown']} ${selected ? styles.selected : ''} ${dragging ? styles.dragging : ''}`}
-      style={{left: node.x, top: node.y}}
-      title={detail}
-      onMouseDown={event => onDragStart(node, event)}
-      onClick={() => onSelect(node)}>
-      <span className={styles.nodeIcon}>{nodeIcon[node.type] || <DeploymentUnitOutlined/>}</span>
-      <span className={styles.nodeBody}>
-        <span className={styles.nodeTitle}>{node.name}</span>
-        <span className={styles.nodeMeta}>{shortMeta}</span>
-      </span>
-      <span className={styles.nodeStatus} title={meta.label}>
-        <span className={styles.nodeStatusDot}/>
-      </span>
-    </button>
+    <Tooltip title={detail} mouseEnterDelay={0.25} overlayClassName={styles.nodeTooltipOverlay}>
+      <button
+        type="button"
+        className={`${styles.node} ${styles[node.status || 'unknown']} ${selected ? styles.selected : ''} ${highlighted ? styles.highlighted : ''} ${dragging ? styles.dragging : ''}`}
+        style={{left: node.x, top: node.y}}
+        onMouseDown={event => onDragStart(node, event)}
+        onClick={() => onSelect(node)}>
+        <span className={styles.nodeIcon}>{nodeIcon[node.type] || <DeploymentUnitOutlined/>}</span>
+        <span className={styles.nodeBody}>
+          <span className={styles.nodeTitle}>{node.name}</span>
+          <span className={styles.nodeMeta}>{shortMeta}</span>
+        </span>
+        <span className={styles.nodeStatus} title={meta.label}>
+          <span className={styles.nodeStatusDot}/>
+        </span>
+      </button>
+    </Tooltip>
   );
 }
 
@@ -1064,6 +1073,16 @@ export default function TopologyIndex() {
     [graphData, filter, viewMode, selectedHostId],
   );
   const graph = useMemo(() => applyDragPositions(baseGraph, dragPositions), [baseGraph, dragPositions]);
+  const relatedNodeIds = useMemo(() => {
+    const ids = new Set();
+    if (!selected) return ids;
+    ids.add(selected.id);
+    graph.edges.forEach(edge => {
+      if (edge.source === selected.id) ids.add(edge.target);
+      if (edge.target === selected.id) ids.add(edge.source);
+    });
+    return ids;
+  }, [graph, selected]);
   const graphSummary = useMemo(() => {
     const allNodes = (graphData.nodes || []).filter(item => item.is_active);
     const runtimeNodes = allNodes.filter(item => item.source && item.source.type === 'runtime');
@@ -1386,6 +1405,7 @@ export default function TopologyIndex() {
                     key={node.id}
                     node={node}
                     selected={selected && selected.id === node.id}
+                    highlighted={selected && relatedNodeIds.has(node.id)}
                     dragging={draggingId === node.id}
                     onSelect={selectNode}
                     onDragStart={startNodeDrag}/>

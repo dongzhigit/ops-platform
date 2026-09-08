@@ -168,6 +168,18 @@
   box-shadow: 0 5px 14px rgba(37, 99, 235, 0.16);
 }
 
+.highlighted {
+  background: #eff6ff;
+  border-color: #60a5fa;
+  box-shadow: 0 5px 14px rgba(37, 99, 235, 0.14);
+}
+
+.selected {
+  background: #dbeafe;
+  border-color: #2563eb;
+  box-shadow: 0 7px 18px rgba(37, 99, 235, 0.22);
+}
+
 .dragging {
   cursor: grabbing;
   box-shadow: 0 8px 18px rgba(37, 99, 235, 0.22);
@@ -229,6 +241,26 @@
   height: 8px;
   background: currentColor;
   border-radius: 50%;
+}
+
+.nodeTooltipOverlay {
+  max-width: 420px;
+}
+
+.nodeTooltip {
+  max-width: 380px;
+  line-height: 1.6;
+  word-break: break-all;
+}
+
+.nodeTooltip span {
+  color: rgba(255, 255, 255, 0.68);
+}
+
+.nodeTooltipTitle {
+  margin-bottom: 4px;
+  color: #fff;
+  font-weight: 600;
 }
 
 .healthy .nodeStatus {

@@ -54,8 +54,11 @@ Last updated: 2026-09-08
   are widened to give business links more horizontal routing space, empty
   columns are folded, sparse columns are vertically centered against the
   densest column, edge labels appear only for the selected node's related
-  links, and full raw identifiers remain available in hover text and the
-  right-side detail panel.
+  links, and full raw identifiers, descriptions and status remain available in
+  a structured hover tooltip and the right-side detail panel.
+- Selecting a topology node now highlights the selected node, directly
+  connected upstream/downstream nodes and directly connected edges in all graph
+  modes, including the full view.
 - Topology graph canvas uses 60% as the default standard view and supports
   60% to 200% zoom levels, with drag movement corrected for the active scale
   so operators can zoom into dense business links without losing manual layout
