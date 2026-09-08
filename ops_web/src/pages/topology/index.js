@@ -58,10 +58,10 @@ const sourceTypeLabel = {
 
 const confidenceLabel = {low: '低', medium: '中', high: '高'};
 const riskColor = {low: 'green', medium: 'blue', high: 'orange', critical: 'red'};
-const NODE_WIDTH = 168;
-const NODE_HEIGHT = 38;
-const COLUMN_SPACING = 208;
-const ROW_SPACING = 58;
+const NODE_WIDTH = 188;
+const NODE_HEIGHT = 44;
+const COLUMN_SPACING = 340;
+const ROW_SPACING = 72;
 const EDGE_LABEL_CHARS = 14;
 const EDGE_LABEL_LINE_HEIGHT = 14;
 const EDGE_ANCHOR_MAX_OFFSET = Math.max(4, NODE_HEIGHT / 2 - 7);

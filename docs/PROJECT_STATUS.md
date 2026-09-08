@@ -50,9 +50,11 @@ Last updated: 2026-09-08
 - The monitoring topology tab now links directly to the layered topology page
   to avoid confusing the legacy monitoring topology with runtime diagnosis.
 - Topology graph nodes now use compact pill nodes with concise name, type,
-  port or PID metadata; empty topology columns are folded, edge labels appear
-  only for the selected node's related links, and full raw identifiers remain
-  available in hover text and the right-side detail panel.
+  port or PID metadata and readable 14px source title text; topology columns
+  are widened to give business links more horizontal routing space, empty
+  columns are folded, edge labels appear only for the selected node's related
+  links, and full raw identifiers remain available in hover text and the
+  right-side detail panel.
 - Topology graph canvas uses 60% as the default standard view and supports
   60% to 200% zoom levels, with drag movement corrected for the active scale
   so operators can zoom into dense business links without losing manual layout
