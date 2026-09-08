@@ -53,9 +53,10 @@ Last updated: 2026-09-08
   port or PID metadata; empty topology columns are folded, edge labels appear
   only for the selected node's related links, and full raw identifiers remain
   available in hover text and the right-side detail panel.
-- Topology graph canvas supports 60% to 200% zoom levels, with drag movement
-  corrected for the active scale so operators can zoom into dense business
-  links without losing manual layout control.
+- Topology graph canvas uses 60% as the default standard view and supports
+  60% to 200% zoom levels, with drag movement corrected for the active scale
+  so operators can zoom into dense business links without losing manual layout
+  control.
 - Topology graph nodes can be dragged within the current canvas. Connection
   anchors are distributed within each compact node side while the curve control
   points fan out parallel calls, so shared MySQL/Redis-style dependencies no

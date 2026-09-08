@@ -1043,10 +1043,10 @@ export default function TopologyIndex() {
   const [viewMode, setViewMode] = useState('servers');
   const [dragPositions, setDragPositions] = useState({});
   const [draggingId, setDraggingId] = useState(null);
-  const [zoom, setZoom] = useState(1);
+  const [zoom, setZoom] = useState(0.6);
   const dragState = useRef(null);
   const suppressClick = useRef(false);
-  const zoomRef = useRef(1);
+  const zoomRef = useRef(0.6);
   const nodeTypes = useMemo(() => enumMap(schema.node_types), [schema]);
   const edgeTypes = useMemo(() => enumMap(schema.edge_types), [schema]);
   const statusTypes = useMemo(() => enumMap(schema.statuses), [schema]);
