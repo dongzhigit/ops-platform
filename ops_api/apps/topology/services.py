@@ -1116,6 +1116,11 @@ def _runtime_endpoint_is_current_host(endpoint, current_host_id, known_host_ips)
     ) == current_host_id
 
 
+def _runtime_endpoint_is_known_remote(endpoint, current_host_id, known_host_ips):
+    host_id = _runtime_endpoint_host_id(endpoint, current_host_id, known_host_ips)
+    return bool(host_id and host_id != current_host_id)
+
+
 def _runtime_is_backend_port(port):
     if port in RUNTIME_BACKEND_PORTS:
         return True
@@ -1158,6 +1163,7 @@ def _runtime_profile_from_node(node, fallback):
         'type': node.type or fallback.get('type'),
         'service': service,
         'runtime_layer': metadata.get('runtime_layer') or fallback.get('runtime_layer'),
+        'detected_by': metadata.get('detected_by') or fallback.get('detected_by'),
     }
 
 
@@ -1171,9 +1177,9 @@ def _runtime_application_for_endpoint(endpoint, protocol, current_host_id,
     remote_host_id = _runtime_endpoint_host_id(
         endpoint, current_host_id, known_host_ips
     )
+    if not remote_host_id:
+        return None
     if port in RUNTIME_FRONTEND_PORTS:
-        if port in (80, 443) and not remote_host_id:
-            return None
         return {
             'kind': 'application',
             'type': 'port',
@@ -1341,17 +1347,11 @@ def _runtime_business_connection(connection, processes, current_host_id,
         local_dependency = _runtime_dependency_for_endpoint(
             connection.get('local'), connection['protocol']
         )
-        if local_dependency and peer and not _runtime_endpoint_is_current_host(
+        if local_dependency and peer and _runtime_endpoint_is_known_remote(
                 peer, current_host_id, known_host_ips):
             connection['business_target'] = 'local'
             return local_dependency
         return None
-    application = _runtime_application_for_endpoint(
-        peer, connection['protocol'], current_host_id, known_host_ips
-    )
-    if application:
-        connection['business_target'] = 'peer'
-        return application
     listener_profile = _runtime_listener_profile_for_endpoint(
         peer, connection['protocol'], current_host_id, known_host_ips,
         listener_profiles
@@ -1359,9 +1359,15 @@ def _runtime_business_connection(connection, processes, current_host_id,
     if _runtime_profile_selected(listener_profile):
         connection['business_target'] = 'peer'
         return listener_profile
+    application = _runtime_application_for_endpoint(
+        peer, connection['protocol'], current_host_id, known_host_ips
+    )
+    if application:
+        connection['business_target'] = 'peer'
+        return application
     local = connection.get('local')
     local_dependency = _runtime_dependency_for_endpoint(local, connection['protocol'])
-    if local_dependency and peer and not _runtime_endpoint_is_current_host(
+    if local_dependency and peer and _runtime_endpoint_is_known_remote(
             peer, current_host_id, known_host_ips):
         connection['business_target'] = 'local'
         return local_dependency
@@ -1369,7 +1375,7 @@ def _runtime_business_connection(connection, processes, current_host_id,
         local, connection['protocol'], current_host_id, known_host_ips,
         listener_profiles
     )
-    if _runtime_profile_selected(local_listener_profile) and peer and not _runtime_endpoint_is_current_host(
+    if _runtime_profile_selected(local_listener_profile) and peer and _runtime_endpoint_is_known_remote(
             peer, current_host_id, known_host_ips):
         connection['business_target'] = 'local'
         return local_listener_profile
@@ -1379,7 +1385,7 @@ def _runtime_business_connection(connection, processes, current_host_id,
     local_listener_key = (
         existing_local_host_id, connection['protocol'], local['port']
     ) if existing_local_host_id and local else None
-    if relevant_listener_keys and local_listener_key in relevant_listener_keys and peer and not _runtime_endpoint_is_current_host(
+    if relevant_listener_keys and local_listener_key in relevant_listener_keys and peer and _runtime_endpoint_is_known_remote(
             peer, current_host_id, known_host_ips):
         if listener_profiles and not _runtime_profile_selected(
                 listener_profiles.get(local_listener_key)):

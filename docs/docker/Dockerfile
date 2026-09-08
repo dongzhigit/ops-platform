@@ -61,7 +61,7 @@ COPY docs/docker/ops-platform.ini /etc/supervisord.d/
 COPY docs/docker/redis.conf /etc/
 COPY docs/docker/entrypoint.sh /
 
-ARG OPS_PLATFORM_VERSION=0.1.0-alpha.41
+ARG OPS_PLATFORM_VERSION=0.1.0-alpha.42
 LABEL org.opencontainers.image.title="ops-platform" \
       org.opencontainers.image.version="${OPS_PLATFORM_VERSION}"
 ENV OPS_PLATFORM_VERSION=${OPS_PLATFORM_VERSION}

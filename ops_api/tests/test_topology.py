@@ -616,6 +616,44 @@ __OPS_TOPOLOGY_SECTION__ connections
         self.assertEqual(calls[0]['target'], nodes[mysql_key]['id'])
         self.assertEqual(calls[0]['metadata']['detected_by'], 'config')
 
+    def test_runtime_scan_prefers_nonstandard_dependency_listener_profile(self):
+        class FakeSSH:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def exec_command_raw(self, command):
+                return 0, """__OPS_TOPOLOGY_SECTION__ processes
+4019 1 python S
+4361 1 redis-server S
+__OPS_TOPOLOGY_SECTION__ process_hints
+4019 django
+__OPS_TOPOLOGY_SECTION__ listeners
+tcp 0 0 0.0.0.0:5555 0.0.0.0:* LISTEN 4019/python
+tcp 0 0 127.0.0.1:7008 0.0.0.0:* LISTEN 4361/redis-server
+__OPS_TOPOLOGY_SECTION__ connections
+tcp 0 0 127.0.0.1:36282 127.0.0.1:7008 ESTABLISHED 4019/python
+tcp 0 0 192.168.18.244:41000 192.168.30.72:5827 ESTABLISHED 4019/python
+tcp 0 0 192.168.18.244:5555 203.0.113.10:42000 ESTABLISHED 4019/python
+"""
+
+        original = Host.get_ssh
+        Host.get_ssh = lambda host: FakeSSH()
+        try:
+            preview = topology_services.sync_runtime_topology(
+                self.admin, [self.host.id], dry_run=True
+            )[0]
+        finally:
+            Host.get_ssh = original
+
+        self.assertEqual(preview['business_connection_count'], 1)
+        connection = preview['recommendations']['connections'][0]
+        self.assertEqual(connection['source'], 'python[4019]')
+        self.assertEqual(connection['service'], 'Redis')
+        self.assertEqual(connection['target_port'], 7008)
+
     def test_sources_and_crud_build_visible_graph_edge(self):
         AccessGrant.objects.create(
             subject_user=self.user,

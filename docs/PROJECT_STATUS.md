@@ -5,7 +5,7 @@ Last updated: 2026-09-07
 ## Current baseline
 
 - Branch: `3.0`
-- Release: `ops-v0.1.0-alpha.41`
+- Release: `ops-v0.1.0-alpha.42`
 - Baseline commit: `b1ff1e748a877158a498cf72b9b816a4cf7eebba`
 - Status: internal pre-release; do not describe it as production-ready.
 - Origin: ops-platform with authorization, security, remote access,
@@ -90,6 +90,10 @@ Last updated: 2026-09-07
   hints, so a Django process can keep a MySQL/PostgreSQL dependency in the
   fixed topology even when no database socket is established at scan time; the
   saved dependency status is still decided by runtime/probe evidence.
+- Runtime dependency discovery now prefers scanned listener process ownership
+  over generic backend port ranges, so non-standard Redis/MySQL ports are not
+  mislabeled as backend APIs; unknown external client traffic is no longer
+  selected as a fixed business dependency by default.
 
 ## Planned AI topology diagnosis
 
