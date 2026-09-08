@@ -14,6 +14,8 @@ import {
   ReloadOutlined,
   RobotOutlined,
   SearchOutlined,
+  ZoomInOutlined,
+  ZoomOutOutlined,
 } from '@ant-design/icons';
 
 import { Action, AuthButton, AuthDiv, Breadcrumb } from 'components';
@@ -62,6 +64,9 @@ const COLUMN_SPACING = 208;
 const ROW_SPACING = 58;
 const EDGE_LABEL_CHARS = 14;
 const EDGE_LABEL_LINE_HEIGHT = 14;
+const EDGE_ANCHOR_MAX_OFFSET = Math.max(4, NODE_HEIGHT / 2 - 7);
+const EDGE_CONTROL_MAX_OFFSET = 58;
+const ZOOM_OPTIONS = [0.6, 0.8, 1, 1.25, 1.5, 2];
 
 
 function CitationTags({values}) {
@@ -477,10 +482,10 @@ function routeEdges(edges, nodeMap) {
   const anchorGroups = {};
   const pairGroups = {};
 
-  function addAnchor(edge, node, other, side, attr) {
+  function addAnchor(edge, node, other, side, attr, controlAttr) {
     const key = `${node.id}:${side}`;
     if (!anchorGroups[key]) anchorGroups[key] = [];
-    anchorGroups[key].push({edge, other, attr});
+    anchorGroups[key].push({edge, other, attr, controlAttr});
   }
 
   routed.forEach(edge => {
@@ -488,8 +493,14 @@ function routeEdges(edges, nodeMap) {
     const target = nodeMap[edge.target];
     if (!source || !target) return;
     const forward = source.x <= target.x;
-    addAnchor(edge, source, target, forward ? 'right' : 'left', 'routeSourceOffset');
-    addAnchor(edge, target, source, forward ? 'left' : 'right', 'routeTargetOffset');
+    addAnchor(
+      edge, source, target, forward ? 'right' : 'left',
+      'routeSourceOffset', 'routeSourceControlOffset',
+    );
+    addAnchor(
+      edge, target, source, forward ? 'left' : 'right',
+      'routeTargetOffset', 'routeTargetControlOffset',
+    );
 
     const pairKey = `${edge.source}|${edge.target}`;
     if (!pairGroups[pairKey]) pairGroups[pairKey] = [];
@@ -502,9 +513,17 @@ function routeEdges(edges, nodeMap) {
       a.other.x - b.other.x ||
       String(a.edge.id).localeCompare(String(b.edge.id))
     ));
-    const maxOffset = Math.min(48, Math.max(13, group.length * 3));
+    const controlMaxOffset = Math.min(
+      EDGE_CONTROL_MAX_OFFSET,
+      Math.max(18, group.length * 3),
+    );
     group.forEach((item, index) => {
-      item.edge[item.attr] = routeOffset(index, group.length, maxOffset);
+      item.edge[item.attr] = routeOffset(
+        index, group.length, EDGE_ANCHOR_MAX_OFFSET,
+      );
+      item.edge[item.controlAttr] = routeOffset(
+        index, group.length, controlMaxOffset,
+      );
     });
   });
 
@@ -565,8 +584,12 @@ function Edge({edge, source, target, edgeTypes, focused}) {
   const y1 = source.y + NODE_HEIGHT / 2 + (edge.routeSourceOffset || 0);
   const x2 = target.x + (forward ? 0 : NODE_WIDTH);
   const y2 = target.y + NODE_HEIGHT / 2 + (edge.routeTargetOffset || 0);
-  const mid = (x1 + x2) / 2;
   const bend = edge.routeBendOffset || 0;
+  const controlDistance = Math.max(36, Math.min(90, Math.abs(x2 - x1) * 0.35));
+  const c1x = x1 + (forward ? controlDistance : -controlDistance);
+  const c2x = x2 - (forward ? controlDistance : -controlDistance);
+  const c1y = y1 + bend + (edge.routeSourceControlOffset || 0);
+  const c2y = y2 + bend + (edge.routeTargetControlOffset || 0);
   const label = edge.label || edgeTypes[edge.type] || '连接';
   const labelLines = splitEdgeLabel(label);
   const labelX = (x1 + x2) / 2;
@@ -577,7 +600,7 @@ function Edge({edge, source, target, edgeTypes, focused}) {
     <g>
       <path
         className={`${styles.edge} ${styles[edge.status || 'unknown']} ${focused ? styles.edgeFocused : ''} ${edge.probed ? '' : styles.dashed}`}
-        d={`M${x1},${y1} C${mid},${y1 + bend} ${mid},${y2 + bend} ${x2},${y2}`}
+        d={`M${x1},${y1} C${c1x},${c1y} ${c2x},${c2y} ${x2},${y2}`}
         markerEnd="url(#topology-arrow)"/>
       <g className={`${styles.edgeLabelGroup} ${focused ? styles.edgeLabelFocused : ''}`}>
         <title>{label}</title>
@@ -1020,8 +1043,10 @@ export default function TopologyIndex() {
   const [viewMode, setViewMode] = useState('servers');
   const [dragPositions, setDragPositions] = useState({});
   const [draggingId, setDraggingId] = useState(null);
+  const [zoom, setZoom] = useState(1);
   const dragState = useRef(null);
   const suppressClick = useRef(false);
+  const zoomRef = useRef(1);
   const nodeTypes = useMemo(() => enumMap(schema.node_types), [schema]);
   const edgeTypes = useMemo(() => enumMap(schema.edge_types), [schema]);
   const statusTypes = useMemo(() => enumMap(schema.statuses), [schema]);
@@ -1069,11 +1094,16 @@ export default function TopologyIndex() {
   }, [filter, viewMode, selectedHostId]);
 
   useEffect(() => {
+    zoomRef.current = zoom;
+  }, [zoom]);
+
+  useEffect(() => {
     function handleMouseMove(event) {
       const drag = dragState.current;
       if (!drag) return;
-      const dx = event.clientX - drag.startX;
-      const dy = event.clientY - drag.startY;
+      const scale = zoomRef.current || 1;
+      const dx = (event.clientX - drag.startX) / scale;
+      const dy = (event.clientY - drag.startY) / scale;
       if (Math.abs(dx) > 2 || Math.abs(dy) > 2) suppressClick.current = true;
       setDragPositions(prev => ({
         ...prev,
@@ -1101,6 +1131,20 @@ export default function TopologyIndex() {
     if (!selected && graph.nodes.length) setSelected(graph.nodes[0]);
     if (selected && !graph.nodeMap[selected.id]) setSelected(graph.nodes[0] || null);
   }, [graph, selected]);
+
+  function updateZoom(nextZoom) {
+    const sorted = ZOOM_OPTIONS.slice().sort((a, b) => a - b);
+    const minZoom = sorted[0];
+    const maxZoom = sorted[sorted.length - 1];
+    setZoom(Math.max(minZoom, Math.min(maxZoom, nextZoom)));
+  }
+
+  function stepZoom(direction) {
+    const sorted = ZOOM_OPTIONS.slice().sort((a, b) => a - b);
+    let index = sorted.findIndex(item => item >= zoom);
+    if (index < 0) index = sorted.length - 1;
+    updateZoom(sorted[Math.max(0, Math.min(sorted.length - 1, index + direction))]);
+  }
 
   function startNodeDrag(node, event) {
     if (event.button !== 0) return;
@@ -1270,6 +1314,22 @@ export default function TopologyIndex() {
           <span className={styles.graphCounter}>
             {graphSummary.visibleNodes} 节点 / {graphSummary.visibleEdges} 连线
           </span>
+          <Button.Group>
+            <Tooltip title="缩小拓扑">
+              <Button icon={<ZoomOutOutlined/>} onClick={() => stepZoom(-1)}/>
+            </Tooltip>
+            <Select
+              value={zoom}
+              onChange={updateZoom}
+              className={styles.zoomSelect}>
+              {ZOOM_OPTIONS.map(item => (
+                <Select.Option key={item} value={item}>{Math.round(item * 100)}%</Select.Option>
+              ))}
+            </Select>
+            <Tooltip title="放大拓扑">
+              <Button icon={<ZoomInOutlined/>} onClick={() => stepZoom(1)}/>
+            </Tooltip>
+          </Button.Group>
         </Space>
         <Space>
           <AuthButton auth="topology.topology.manage" icon={<SearchOutlined/>} onClick={openRuntimeScan}>
@@ -1289,37 +1349,47 @@ export default function TopologyIndex() {
       <div className={styles.workspace}>
         <div className={styles.canvasWrap}>
           {graph.nodes.length ? (
-            <div className={styles.canvas} style={{width: graph.width, height: graph.height}}>
-              {Object.entries(graph.columns).map(([type, col]) => (
-                <div key={type} className={styles.columnTitle} style={{left: col.x}}>
-                  {nodeTypes[type] || type}
-                </div>
-              ))}
-              <svg className={styles.edges} viewBox={`0 0 ${graph.width} ${graph.height}`}>
-                <defs>
-                  <marker id="topology-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
-                    <path d="M0,0 L8,4 L0,8 Z" className={styles.arrow}/>
-                  </marker>
-                </defs>
-                {graph.edges.map(edge => (
-                  <Edge
-                    key={edge.id}
-                    edge={edge}
-                    source={graph.nodeMap[edge.source]}
-                    target={graph.nodeMap[edge.target]}
-                    edgeTypes={edgeTypes}
-                    focused={selected && (selected.id === edge.source || selected.id === edge.target)}/>
+            <div
+              className={styles.zoomSurface}
+              style={{width: graph.width * zoom, height: graph.height * zoom}}>
+              <div
+                className={styles.canvas}
+                style={{
+                  width: graph.width,
+                  height: graph.height,
+                  transform: `scale(${zoom})`,
+                }}>
+                {Object.entries(graph.columns).map(([type, col]) => (
+                  <div key={type} className={styles.columnTitle} style={{left: col.x}}>
+                    {nodeTypes[type] || type}
+                  </div>
                 ))}
-              </svg>
-              {graph.nodes.map(node => (
-                <Node
-                  key={node.id}
-                  node={node}
-                  selected={selected && selected.id === node.id}
-                  dragging={draggingId === node.id}
-                  onSelect={selectNode}
-                  onDragStart={startNodeDrag}/>
-              ))}
+                <svg className={styles.edges} viewBox={`0 0 ${graph.width} ${graph.height}`}>
+                  <defs>
+                    <marker id="topology-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+                      <path d="M0,0 L8,4 L0,8 Z" className={styles.arrow}/>
+                    </marker>
+                  </defs>
+                  {graph.edges.map(edge => (
+                    <Edge
+                      key={edge.id}
+                      edge={edge}
+                      source={graph.nodeMap[edge.source]}
+                      target={graph.nodeMap[edge.target]}
+                      edgeTypes={edgeTypes}
+                      focused={selected && (selected.id === edge.source || selected.id === edge.target)}/>
+                  ))}
+                </svg>
+                {graph.nodes.map(node => (
+                  <Node
+                    key={node.id}
+                    node={node}
+                    selected={selected && selected.id === node.id}
+                    dragging={draggingId === node.id}
+                    onSelect={selectNode}
+                    onDragStart={startNodeDrag}/>
+                ))}
+              </div>
             </div>
           ) : (
             <Empty description="暂无可展示的拓扑数据"/>

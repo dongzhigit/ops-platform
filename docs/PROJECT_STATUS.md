@@ -53,10 +53,14 @@ Last updated: 2026-09-08
   port or PID metadata; empty topology columns are folded, edge labels appear
   only for the selected node's related links, and full raw identifiers remain
   available in hover text and the right-side detail panel.
+- Topology graph canvas supports 60% to 200% zoom levels, with drag movement
+  corrected for the active scale so operators can zoom into dense business
+  links without losing manual layout control.
 - Topology graph nodes can be dragged within the current canvas. Connection
-  anchors are distributed across each node side and parallel calls get curved
-  route offsets, so shared MySQL/Redis-style dependencies no longer render as
-  one overlapped line bundle.
+  anchors are distributed within each compact node side while the curve control
+  points fan out parallel calls, so shared MySQL/Redis-style dependencies no
+  longer render as one overlapped line bundle without visually detaching from
+  their nodes.
 - Topology edge labels now wrap into multiple SVG text lines with a light
   background instead of being truncated to ten characters.
 - Runtime topology now keeps business dependency calls such as MySQL, Redis,

@@ -20,6 +20,10 @@
   white-space: nowrap;
 }
 
+.zoomSelect {
+  width: 82px;
+}
+
 .workspace {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 320px;
@@ -36,6 +40,12 @@
 }
 
 .canvas {
+  position: relative;
+  min-width: 0;
+  transform-origin: 0 0;
+}
+
+.zoomSurface {
   position: relative;
   min-width: 100%;
 }
