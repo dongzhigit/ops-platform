@@ -1,6 +1,6 @@
 # M6 AI 拓扑诊断与事件作战室
 
-版本：`0.1.0-alpha.42`
+版本：`0.1.0-alpha.43`
 记录日期：2026-09-07
 
 ## 目标
@@ -248,6 +248,7 @@
 - 对 `mysqld`、`redis-server` 等数据库/中间件进程增加服务画像，非标准端口也能按进程识别为 MySQL、Redis 等服务。
 - Django 进程没有实时数据库连接时，运行态扫描会读取 settings/config/.env 中不含密码的 ENGINE/HOST/PORT 线索，生成配置发现的固定数据库依赖，保存后的健康状态仍由运行态连接或端口探测确认。
 - 非标准端口识别优先使用监听进程归属，避免 Redis/MySQL 这类服务因端口落在后端范围内被误判为 Backend API；公网或未纳管客户端访问不会默认写入固定业务拓扑。
+- Nginx upstream/proxy 配置会作为脱敏应用链路证据参与拓扑生成，使 `Nginx -> Django -> MySQL/Redis` 能在没有瞬时长连接时仍保持串联；内网客户端访问共享 MySQL/Redis 会汇聚到对应依赖节点。
 
 验收标准：
 - 可以展示 `前端 -> 后端 API -> MySQL/Redis` 等业务链路。
@@ -259,6 +260,8 @@
 - Django settings 中存在 MySQL/PostgreSQL HOST/PORT 时，即使扫描瞬间没有 ESTABLISHED socket，也应给出可人工确认的业务依赖连接。
 - `redis-server` 监听 `7008` 等非标准端口时，Python 进程连接该端口应显示为 Redis 依赖，而不是 Backend API。
 - 未纳管外部客户端访问 Django/Nginx 等入口端口不应默认成为固定业务依赖线。
+- Nginx 配置中存在 `proxy_pass`、`uwsgi_pass`、`fastcgi_pass` 或 upstream `server host:port` 时，应生成 Nginx 到对应本机或已纳管后端服务的业务连接。
+- 内网系统连接共享 MySQL/Redis 时，即使该系统暂未纳管，也应以外部系统节点汇聚到该数据库/中间件服务。
 - 随机浏览器回连、临时高端口连接和系统采集进程不进入默认业务拓扑。
 - 新增主机时的自动发现不保存密码、密钥、命令行参数、环境变量或配置密文。
 - AI 仍只基于已授权证据做诊断，不直接执行命令或自动变更拓扑确认结果。
@@ -361,9 +364,11 @@
 - 2026-09-05：运行态拓扑收敛为业务依赖视图，仅将进程连接到 MySQL、Redis、PostgreSQL、MongoDB、RabbitMQ、Kafka 等依赖端口的连接写入默认诊断拓扑，普通已建立 TCP 连接不再铺满主图。
 - 2026-09-05：运行态拓扑扩展为业务全链路识别，自动保留 Nginx/Vue/Node 前端、Python/Go/Java/Node 后端、数据库和中间件之间的连接，并继续过滤随机客户端端口、SSH、监控 exporter 等非业务连接；新增主机验证成功后可自动触发业务拓扑发现，再由人工确认和补充。
 - 2026-09-07：运行态扫描补充 Django 脱敏框架指纹识别，远端只输出 PID 与框架标签，不输出完整命令行；Python/Gunicorn/uWSGI/Uvicorn/Daphne 承载的 Django 监听端口会在候选服务和拓扑节点中显示为 Django；未识别监听端口也进入候选服务列表但默认不勾选；业务连接来源保留具体进程，避免显示成笼统的主机连接数据库。
+- 2026-09-08：拓扑画布节点由大卡片改为紧凑业务链路节点，只在主图展示名称、状态和端口/PID/服务类型等短元信息，完整标识、描述、监控和运行态详情保留在悬停提示与右侧详情面板，减少多服务链路场景下的视觉拥挤。
 - 2026-09-07：运行态扫描在目标主机允许免密 sudo 时自动使用 `sudo -n` 采集 netstat/ps 的 PID 归属，补充 netstat `PID/进程名` 格式解析，并按 `mysqld`、`redis-server` 等进程识别非标准端口上的数据库/中间件服务。
 - 2026-09-07：运行态扫描补充脱敏 Django 配置依赖发现，当没有实时数据库 socket 时，仍可从 settings/config/.env 的 ENGINE/HOST/PORT 线索推荐 Django 到 MySQL/PostgreSQL 的固定业务链路；未知 TCP Service 监听不会自动生成业务连接。
 - 2026-09-08：运行态连接识别调整为优先采用已扫描监听进程画像，修正非标准 Redis/MySQL 端口被后端端口范围误判的问题；未纳管外部客户端入口流量不再默认写入固定业务连接。
+- 2026-09-08：运行态扫描补充 Nginx upstream/proxy 脱敏配置识别，生成 Nginx 到 Django/后端服务的应用链路；数据库/Redis 入站内网客户端会汇聚到共享依赖节点，便于查看跨系统关系。
 
 ## 边界
 

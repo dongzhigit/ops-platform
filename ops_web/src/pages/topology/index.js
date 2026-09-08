@@ -56,12 +56,12 @@ const sourceTypeLabel = {
 
 const confidenceLabel = {low: '低', medium: '中', high: '高'};
 const riskColor = {low: 'green', medium: 'blue', high: 'orange', critical: 'red'};
-const NODE_WIDTH = 300;
-const NODE_HEIGHT = 92;
-const COLUMN_SPACING = 360;
-const ROW_SPACING = 156;
-const EDGE_LABEL_CHARS = 18;
-const EDGE_LABEL_LINE_HEIGHT = 16;
+const NODE_WIDTH = 220;
+const NODE_HEIGHT = 56;
+const COLUMN_SPACING = 270;
+const ROW_SPACING = 90;
+const EDGE_LABEL_CHARS = 14;
+const EDGE_LABEL_LINE_HEIGHT = 14;
 
 
 function CitationTags({values}) {
@@ -181,6 +181,30 @@ function labelTextWidth(text) {
   return Array.from(text || '').reduce((value, char) => (
     value + (char.charCodeAt(0) > 255 ? 12 : 7)
   ), 0);
+}
+
+
+function nodeMetaText(node) {
+  const metadata = node.metadata || {};
+  if (node.type === 'process') {
+    return [
+      metadata.framework || metadata.service || metadata.process_name || '进程',
+      metadata.pid ? `PID ${metadata.pid}` : null,
+    ].filter(Boolean).join(' · ');
+  }
+  if (['port', 'database', 'middleware'].includes(node.type)) {
+    return [
+      metadata.service || metadata.role || metadata.protocol || node.type,
+      metadata.port ? `:${metadata.port}` : null,
+    ].filter(Boolean).join(' ');
+  }
+  if (node.type === 'host') {
+    return metadata.hostname || metadata.address || node.key || '主机';
+  }
+  if (node.type === 'external') {
+    return metadata.address || node.key || '外部';
+  }
+  return metadata.service || metadata.framework || node.key || node.type;
 }
 
 
@@ -457,7 +481,8 @@ function applyDragPositions(layout, positions) {
 
 function Node({node, selected, dragging, onSelect, onDragStart}) {
   const meta = statusMeta[node.status] || statusMeta.unknown;
-  const detail = [node.name, node.key].filter(Boolean).join('\n');
+  const shortMeta = nodeMetaText(node);
+  const detail = [node.name, shortMeta, node.key, node.description].filter(Boolean).join('\n');
   return (
     <button
       type="button"
@@ -469,9 +494,12 @@ function Node({node, selected, dragging, onSelect, onDragStart}) {
       <span className={styles.nodeIcon}>{nodeIcon[node.type] || <DeploymentUnitOutlined/>}</span>
       <span className={styles.nodeBody}>
         <span className={styles.nodeTitle}>{node.name}</span>
-        <span className={styles.nodeMeta}>{node.key}</span>
+        <span className={styles.nodeMeta}>{shortMeta}</span>
       </span>
-      <Tag color={meta.color} className={styles.nodeStatus}>{meta.label}</Tag>
+      <span className={styles.nodeStatus}>
+        <span className={styles.nodeStatusDot}/>
+        <span>{meta.label}</span>
+      </span>
     </button>
   );
 }
@@ -480,9 +508,9 @@ function Node({node, selected, dragging, onSelect, onDragStart}) {
 function Edge({edge, source, target, edgeTypes}) {
   const forward = source.x <= target.x;
   const x1 = source.x + (forward ? NODE_WIDTH : 0);
-  const y1 = source.y + 46;
+  const y1 = source.y + NODE_HEIGHT / 2;
   const x2 = target.x + (forward ? 0 : NODE_WIDTH);
-  const y2 = target.y + 46;
+  const y2 = target.y + NODE_HEIGHT / 2;
   const mid = (x1 + x2) / 2;
   const label = edge.label || edgeTypes[edge.type] || '连接';
   const labelLines = splitEdgeLabel(label);

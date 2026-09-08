@@ -654,6 +654,82 @@ tcp 0 0 192.168.18.244:5555 203.0.113.10:42000 ESTABLISHED 4019/python
         self.assertEqual(connection['service'], 'Redis')
         self.assertEqual(connection['target_port'], 7008)
 
+    def test_runtime_scan_builds_nginx_to_django_service_chain(self):
+        class FakeSSH:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def exec_command_raw(self, command):
+                return 0, """__OPS_TOPOLOGY_SECTION__ processes
+23 1 nginx S
+56 1 python S
+70 1 mysqld S
+__OPS_TOPOLOGY_SECTION__ process_hints
+56 django
+__OPS_TOPOLOGY_SECTION__ app_hints
+23\t10:        proxy_pass http://127.0.0.1:8080;
+__OPS_TOPOLOGY_SECTION__ listeners
+tcp LISTEN 0 128 0.0.0.0:80 0.0.0.0:* users:((\"nginx\",pid=23,fd=6))
+tcp LISTEN 0 128 0.0.0.0:8080 0.0.0.0:* users:((\"python\",pid=56,fd=6))
+tcp LISTEN 0 128 0.0.0.0:3306 0.0.0.0:* users:((\"mysqld\",pid=70,fd=6))
+__OPS_TOPOLOGY_SECTION__ connections
+tcp ESTAB 0 0 192.168.18.226:41000 127.0.0.1:3306 users:((\"python\",pid=56,fd=8))
+"""
+
+        original = Host.get_ssh
+        Host.get_ssh = lambda host: FakeSSH()
+        try:
+            preview = topology_services.sync_runtime_topology(
+                self.admin, [self.host.id], dry_run=True
+            )[0]
+            topology_services.sync_runtime_topology(
+                self.admin,
+                [self.host.id],
+                selected_service_keys=[
+                    item['key']
+                    for item in preview['recommendations']['services']
+                    if item['selected']
+                ],
+                selected_connection_keys=[
+                    item['key']
+                    for item in preview['recommendations']['connections']
+                    if item['selected']
+                ],
+            )
+        finally:
+            Host.get_ssh = original
+
+        self.assertEqual(preview['business_connection_count'], 2)
+        connections = preview['recommendations']['connections']
+        self.assertEqual(
+            {item['service'] for item in connections},
+            {'Django', 'MySQL'},
+        )
+        django_call = [item for item in connections if item['service'] == 'Django'][0]
+        self.assertEqual(django_call['source'], 'nginx[23]')
+        self.assertEqual(django_call['target_port'], 8080)
+        self.assertEqual(django_call['detected_by'], 'config')
+
+        graph = topology_services.build_topology_graph(self.admin)
+        nodes = {item['key']: item for item in graph['nodes']}
+        nginx_key = 'runtime:host:%s:process:23' % self.host.id
+        django_port_key = 'runtime:host:%s:port:tcp:8080' % self.host.id
+        mysql_port_key = 'runtime:host:%s:port:tcp:3306' % self.host.id
+        calls = [item for item in graph['edges'] if item['type'] == 'calls']
+        self.assertEqual(len(calls), 2)
+        self.assertTrue([
+            item for item in calls
+            if item['source'] == nodes[nginx_key]['id'] and
+            item['target'] == nodes[django_port_key]['id']
+        ])
+        self.assertTrue([
+            item for item in calls
+            if item['target'] == nodes[mysql_port_key]['id']
+        ])
+
     def test_sources_and_crud_build_visible_graph_edge(self):
         AccessGrant.objects.create(
             subject_user=self.user,

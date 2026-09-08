@@ -44,8 +44,9 @@
   position: absolute;
   z-index: 2;
   top: 16px;
-  width: 300px;
+  width: 220px;
   color: #475569;
+  font-size: 12px;
   font-weight: 600;
 }
 
@@ -61,7 +62,7 @@
 .edge {
   fill: none;
   stroke: #94a3b8;
-  stroke-width: 3;
+  stroke-width: 2.5;
   stroke-linecap: round;
   opacity: 0.95;
 }
@@ -107,7 +108,7 @@
 
 .edgeLabel {
   fill: #475569;
-  font-size: 12px;
+  font-size: 11px;
   pointer-events: none;
 }
 
@@ -120,20 +121,20 @@
 .node {
   position: absolute;
   z-index: 3;
-  width: 300px;
-  min-height: 92px;
-  height: 92px;
+  width: 220px;
+  min-height: 56px;
+  height: 56px;
   display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  padding: 10px;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 9px;
   overflow: hidden;
   text-align: left;
   background: #fff;
   border: 1px solid #dbe4ea;
-  border-left-width: 4px;
+  border-left-width: 3px;
   border-radius: 6px;
-  box-shadow: 0 10px 22px rgba(15, 23, 42, 0.08);
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.08);
   cursor: grab;
   user-select: none;
 }
@@ -141,30 +142,30 @@
 .node:hover,
 .selected {
   border-color: #2563eb;
-  box-shadow: 0 12px 26px rgba(37, 99, 235, 0.16);
+  box-shadow: 0 8px 18px rgba(37, 99, 235, 0.16);
 }
 
 .dragging {
   cursor: grabbing;
-  box-shadow: 0 16px 32px rgba(37, 99, 235, 0.22);
+  box-shadow: 0 12px 24px rgba(37, 99, 235, 0.22);
 }
 
 .nodeIcon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  flex: 0 0 32px;
-  height: 32px;
+  flex: 0 0 28px;
+  height: 28px;
   color: #1d4ed8;
   background: #dbeafe;
   border-radius: 6px;
-  font-size: 18px;
+  font-size: 16px;
 }
 
 .nodeBody {
   min-width: 0;
   flex: 1;
-  line-height: 1.35;
+  line-height: 1.25;
 }
 
 .nodeTitle,
@@ -172,30 +173,63 @@
   display: block;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: normal;
-  word-break: break-all;
+  white-space: nowrap;
+  word-break: normal;
 }
 
 .nodeTitle {
-  display: -webkit-box;
-  min-height: 20px;
+  max-width: 100%;
   color: #0f172a;
+  font-size: 13px;
   font-weight: 600;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
 }
 
 .nodeMeta {
-  display: -webkit-box;
+  margin-top: 3px;
   color: #64748b;
-  font-size: 12px;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+  font-size: 11px;
 }
 
 .nodeStatus {
   flex: 0 0 auto;
-  margin-right: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 44px;
+  overflow: hidden;
+  color: #64748b;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.nodeStatusDot {
+  flex: 0 0 7px;
+  width: 7px;
+  height: 7px;
+  background: currentColor;
+  border-radius: 50%;
+}
+
+.healthy .nodeStatus {
+  color: #059669;
+}
+
+.info .nodeStatus {
+  color: #0284c7;
+}
+
+.warning .nodeStatus {
+  color: #d97706;
+}
+
+.critical .nodeStatus,
+.offline .nodeStatus {
+  color: #dc2626;
+}
+
+.disabled .nodeStatus,
+.unknown .nodeStatus {
+  color: #64748b;
 }
 
 .detail {

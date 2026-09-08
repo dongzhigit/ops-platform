@@ -1,4 +1,5 @@
 import hashlib
+import ipaddress
 import json
 import re
 import shlex
@@ -73,6 +74,24 @@ $SUDO ps axww -o pid= -o args= 2>/dev/null | awk '
     done
   done
 done | head -500
+printf '__OPS_TOPOLOGY_SECTION__ app_hints\\n'
+nginx_pid=$($SUDO ps axww -o pid= -o comm= 2>/dev/null | awk '$2 ~ /nginx/ {print $1; exit}')
+nginx_bin=''
+if command -v nginx >/dev/null 2>&1; then
+  nginx_bin=$(command -v nginx)
+elif [ -x /usr/local/nginx/sbin/nginx ]; then
+  nginx_bin=/usr/local/nginx/sbin/nginx
+fi
+if [ -n "$nginx_pid" ]; then
+  if [ -n "$nginx_bin" ]; then
+    $SUDO "$nginx_bin" -T 2>/dev/null | grep -nEi "proxy_pass|uwsgi_pass|fastcgi_pass|grpc_pass|server[[:space:]]+[A-Za-z0-9_.:-]+:[0-9]+" | grep -Evi "PASSWORD|PASS|SECRET|KEY|TOKEN" | head -300 | while IFS= read -r line; do
+      printf "%s\\t%s\\n" "$nginx_pid" "$line"
+    done
+  fi
+  $SUDO grep -RInE "proxy_pass|uwsgi_pass|fastcgi_pass|grpc_pass|server[[:space:]]+[A-Za-z0-9_.:-]+:[0-9]+" /etc/nginx /usr/local/nginx/conf 2>/dev/null | grep -Evi "PASSWORD|PASS|SECRET|KEY|TOKEN" | head -300 | while IFS= read -r line; do
+    printf "%s\\t%s\\n" "$nginx_pid" "$line"
+  done
+fi
 printf '__OPS_TOPOLOGY_SECTION__ listeners\\n'
 if command -v ss >/dev/null 2>&1; then
   $SUDO ss -H -lntup 2>/dev/null | head -1000
@@ -598,6 +617,7 @@ def _split_runtime_sections(output):
         'processes': [],
         'process_hints': [],
         'config_hints': [],
+        'app_hints': [],
         'listeners': [],
         'connections': [],
     }
@@ -790,6 +810,44 @@ def _parse_runtime_config_hints(lines):
             'profile': profile,
             'file': record.get('file') or '',
         })
+    return hints
+
+
+def _parse_runtime_app_hints(lines):
+    hints = []
+    seen = set()
+    for line in lines:
+        parts = str(line or '').split('\t', 1)
+        if len(parts) != 2 or not parts[0].isdigit():
+            continue
+        pid = int(parts[0])
+        content = parts[1].strip()
+        if not content or content.startswith('#'):
+            continue
+        matches = []
+        for pattern in (
+                r'(?:proxy_pass|uwsgi_pass|fastcgi_pass|grpc_pass)\s+(?:https?://|uwsgi://|grpc://|fastcgi://)?([^/;\s:]+):(\d+)',
+                r'\bserver\s+([^;\s:]+):(\d+)'):
+            matches.extend(re.findall(pattern, content, flags=re.I))
+        for address, port in matches:
+            address = str(address or '').strip().strip('[]')
+            if address in ('', '$host', '$server_name') or address.startswith('$'):
+                continue
+            if address == 'localhost':
+                address = '127.0.0.1'
+            if not str(port).isdigit():
+                continue
+            key = (pid, address, int(port))
+            if key in seen:
+                continue
+            seen.add(key)
+            hints.append({
+                'pid': pid,
+                'address': address,
+                'port': int(port),
+                'protocol': 'tcp',
+                'detected_by': 'config',
+            })
     return hints
 
 
@@ -1121,6 +1179,23 @@ def _runtime_endpoint_is_known_remote(endpoint, current_host_id, known_host_ips)
     return bool(host_id and host_id != current_host_id)
 
 
+def _runtime_endpoint_is_private_remote(endpoint, current_host_id, known_host_ips):
+    if _runtime_endpoint_is_current_host(endpoint, current_host_id, known_host_ips):
+        return False
+    address = str((endpoint or {}).get('address') or '').strip()
+    try:
+        return ipaddress.ip_address(address).is_private
+    except ValueError:
+        return False
+
+
+def _runtime_endpoint_is_dependency_client(endpoint, current_host_id, known_host_ips):
+    return (
+        _runtime_endpoint_is_known_remote(endpoint, current_host_id, known_host_ips) or
+        _runtime_endpoint_is_private_remote(endpoint, current_host_id, known_host_ips)
+    )
+
+
 def _runtime_is_backend_port(port):
     if port in RUNTIME_BACKEND_PORTS:
         return True
@@ -1335,6 +1410,48 @@ def _runtime_config_connections(config_hints, processes, listeners):
     return connections
 
 
+def _runtime_app_connections(app_hints, processes, current_host_id,
+                             known_host_ips, listener_profiles):
+    connections = []
+    seen = set()
+    for hint in app_hints:
+        pid = hint.get('pid')
+        if pid not in processes:
+            continue
+        peer = {
+            'address': hint.get('address') or '127.0.0.1',
+            'port': int(hint.get('port') or 0),
+        }
+        if not peer['port']:
+            continue
+        profile = _runtime_listener_profile_for_endpoint(
+            peer, hint.get('protocol') or 'tcp', current_host_id,
+            known_host_ips, listener_profiles
+        ) or _runtime_application_for_endpoint(
+            peer, hint.get('protocol') or 'tcp', current_host_id,
+            known_host_ips
+        )
+        if not _runtime_profile_selected(profile):
+            continue
+        key = (pid, peer['address'], peer['port'], profile.get('service'))
+        if key in seen:
+            continue
+        seen.add(key)
+        connections.append(({
+            'protocol': hint.get('protocol') or 'tcp',
+            'state': 'CONFIGURED',
+            'local': {'address': '127.0.0.1', 'port': 0},
+            'peer': peer,
+            'processes': [{
+                'pid': pid,
+                'name': processes[pid].get('name') or 'process',
+            }],
+            'business_target': 'peer',
+            'detected_by': hint.get('detected_by') or 'config',
+        }, profile))
+    return connections
+
+
 def _runtime_business_connection(connection, processes, current_host_id,
                                  known_host_ips, relevant_listener_keys=None,
                                  listener_profiles=None):
@@ -1347,7 +1464,7 @@ def _runtime_business_connection(connection, processes, current_host_id,
         local_dependency = _runtime_dependency_for_endpoint(
             connection.get('local'), connection['protocol']
         )
-        if local_dependency and peer and _runtime_endpoint_is_known_remote(
+        if local_dependency and peer and _runtime_endpoint_is_dependency_client(
                 peer, current_host_id, known_host_ips):
             connection['business_target'] = 'local'
             return local_dependency
@@ -1367,7 +1484,7 @@ def _runtime_business_connection(connection, processes, current_host_id,
         return application
     local = connection.get('local')
     local_dependency = _runtime_dependency_for_endpoint(local, connection['protocol'])
-    if local_dependency and peer and _runtime_endpoint_is_known_remote(
+    if local_dependency and peer and _runtime_endpoint_is_dependency_client(
             peer, current_host_id, known_host_ips):
         connection['business_target'] = 'local'
         return local_dependency
@@ -1375,8 +1492,12 @@ def _runtime_business_connection(connection, processes, current_host_id,
         local, connection['protocol'], current_host_id, known_host_ips,
         listener_profiles
     )
-    if _runtime_profile_selected(local_listener_profile) and peer and _runtime_endpoint_is_known_remote(
-            peer, current_host_id, known_host_ips):
+    if _runtime_profile_selected(local_listener_profile) and peer and (
+            _runtime_endpoint_is_known_remote(peer, current_host_id, known_host_ips) or
+            (
+                local_listener_profile.get('kind') == 'dependency' and
+                _runtime_endpoint_is_dependency_client(peer, current_host_id, known_host_ips)
+            )):
         connection['business_target'] = 'local'
         return local_listener_profile
     existing_local_host_id = _runtime_endpoint_host_id(
@@ -1385,8 +1506,13 @@ def _runtime_business_connection(connection, processes, current_host_id,
     local_listener_key = (
         existing_local_host_id, connection['protocol'], local['port']
     ) if existing_local_host_id and local else None
-    if relevant_listener_keys and local_listener_key in relevant_listener_keys and peer and _runtime_endpoint_is_known_remote(
-            peer, current_host_id, known_host_ips):
+    if relevant_listener_keys and local_listener_key in relevant_listener_keys and peer and (
+            _runtime_endpoint_is_known_remote(peer, current_host_id, known_host_ips) or
+            (
+                listener_profiles and
+                (listener_profiles.get(local_listener_key) or {}).get('kind') == 'dependency' and
+                _runtime_endpoint_is_dependency_client(peer, current_host_id, known_host_ips)
+            )):
         if listener_profiles and not _runtime_profile_selected(
                 listener_profiles.get(local_listener_key)):
             return None
@@ -1784,6 +1910,7 @@ def sync_runtime_topology(user, host_ids, dry_run=False,
             config_hints = _parse_runtime_config_hints(
                 sections['config_hints']
             )
+            app_hints = _parse_runtime_app_hints(sections['app_hints'])
             listeners = _parse_sockets(sections['listeners'])
             connections = _parse_sockets(sections['connections'])
             for socket in listeners + connections:
@@ -1824,6 +1951,20 @@ def sync_runtime_topology(user, host_ids, dry_run=False,
                 connection_key = _runtime_connection_monitor_key(
                     host.id, connection, profile
                 )
+                connection_keys.add(connection_key)
+                business_connections.append((connection, profile))
+                if profile['kind'] == 'dependency':
+                    dependency_connections.append(connection)
+                for process_ref in connection['processes']:
+                    business_pids.add(process_ref['pid'])
+            for connection, profile in _runtime_app_connections(
+                    app_hints, processes, host.id, known_host_ips,
+                    listener_profiles):
+                connection_key = _runtime_connection_monitor_key(
+                    host.id, connection, profile
+                )
+                if connection_key in connection_keys:
+                    continue
                 connection_keys.add(connection_key)
                 business_connections.append((connection, profile))
                 if profile['kind'] == 'dependency':

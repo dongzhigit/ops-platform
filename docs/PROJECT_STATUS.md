@@ -5,7 +5,7 @@ Last updated: 2026-09-07
 ## Current baseline
 
 - Branch: `3.0`
-- Release: `ops-v0.1.0-alpha.42`
+- Release: `ops-v0.1.0-alpha.43`
 - Baseline commit: `b1ff1e748a877158a498cf72b9b816a4cf7eebba`
 - Status: internal pre-release; do not describe it as production-ready.
 - Origin: ops-platform with authorization, security, remote access,
@@ -49,12 +49,12 @@ Last updated: 2026-09-07
   drilling into a server or switching to the full view.
 - The monitoring topology tab now links directly to the layered topology page
   to avoid confusing the legacy monitoring topology with runtime diagnosis.
-- Topology node cards now use wider two-line name and metadata areas, plus
-  hover text for the full raw value, so long host, service and port identifiers
-  are not hidden by the first view.
-- Topology node cards can be dragged within the current canvas and automatic
-  row spacing is wider, so operators can separate crowded nodes while keeping
-  connection lines aligned with the moved cards.
+- Topology graph nodes now use compact service-map tiles with concise name,
+  type, port or PID metadata, while full raw identifiers remain available in
+  hover text and the right-side detail panel.
+- Topology graph nodes can be dragged within the current canvas and connection
+  anchors follow the compact node size, so operators can separate crowded
+  business links without turning the graph into large cards.
 - Topology edge labels now wrap into multiple SVG text lines with a light
   background instead of being truncated to ten characters.
 - Runtime topology now keeps business dependency calls such as MySQL, Redis,
@@ -94,6 +94,10 @@ Last updated: 2026-09-07
   over generic backend port ranges, so non-standard Redis/MySQL ports are not
   mislabeled as backend APIs; unknown external client traffic is no longer
   selected as a fixed business dependency by default.
+- Runtime service-chain discovery now reads sanitized Nginx upstream/proxy
+  targets and preserves application-to-application calls such as
+  Nginx -> Django, while allowing private clients of shared MySQL/Redis
+  services to converge on the same dependency nodes.
 
 ## Planned AI topology diagnosis
 
