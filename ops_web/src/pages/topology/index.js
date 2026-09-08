@@ -554,6 +554,38 @@ function applyDragPositions(layout, positions) {
 }
 
 
+function traceConnectedGraph(graph, selected) {
+  const nodeIds = new Set();
+  const edgeIds = new Set();
+  if (!selected) return {nodeIds, edgeIds};
+
+  const adjacency = {};
+  graph.nodes.forEach(node => {
+    adjacency[node.id] = [];
+  });
+  graph.edges.forEach(edge => {
+    if (!adjacency[edge.source] || !adjacency[edge.target]) return;
+    adjacency[edge.source].push(edge);
+    adjacency[edge.target].push(edge);
+  });
+
+  const queue = [selected.id];
+  nodeIds.add(selected.id);
+  while (queue.length) {
+    const nodeId = queue.shift();
+    (adjacency[nodeId] || []).forEach(edge => {
+      edgeIds.add(edge.id);
+      const nextId = edge.source === nodeId ? edge.target : edge.source;
+      if (!nodeIds.has(nextId)) {
+        nodeIds.add(nextId);
+        queue.push(nextId);
+      }
+    });
+  }
+  return {nodeIds, edgeIds};
+}
+
+
 function Node({node, selected, highlighted, dragging, onSelect, onDragStart}) {
   const meta = statusMeta[node.status] || statusMeta.unknown;
   const shortMeta = nodeMetaText(node);
@@ -1073,16 +1105,10 @@ export default function TopologyIndex() {
     [graphData, filter, viewMode, selectedHostId],
   );
   const graph = useMemo(() => applyDragPositions(baseGraph, dragPositions), [baseGraph, dragPositions]);
-  const relatedNodeIds = useMemo(() => {
-    const ids = new Set();
-    if (!selected) return ids;
-    ids.add(selected.id);
-    graph.edges.forEach(edge => {
-      if (edge.source === selected.id) ids.add(edge.target);
-      if (edge.target === selected.id) ids.add(edge.source);
-    });
-    return ids;
-  }, [graph, selected]);
+  const highlightTrace = useMemo(
+    () => traceConnectedGraph(graph, selected),
+    [graph, selected],
+  );
   const graphSummary = useMemo(() => {
     const allNodes = (graphData.nodes || []).filter(item => item.is_active);
     const runtimeNodes = allNodes.filter(item => item.source && item.source.type === 'runtime');
@@ -1397,7 +1423,7 @@ export default function TopologyIndex() {
                       source={graph.nodeMap[edge.source]}
                       target={graph.nodeMap[edge.target]}
                       edgeTypes={edgeTypes}
-                      focused={selected && (selected.id === edge.source || selected.id === edge.target)}/>
+                      focused={highlightTrace.edgeIds.has(edge.id)}/>
                   ))}
                 </svg>
                 {graph.nodes.map(node => (
@@ -1405,7 +1431,7 @@ export default function TopologyIndex() {
                     key={node.id}
                     node={node}
                     selected={selected && selected.id === node.id}
-                    highlighted={selected && relatedNodeIds.has(node.id)}
+                    highlighted={highlightTrace.nodeIds.has(node.id)}
                     dragging={draggingId === node.id}
                     onSelect={selectNode}
                     onDragStart={startNodeDrag}/>

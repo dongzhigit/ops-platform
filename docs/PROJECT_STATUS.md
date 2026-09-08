@@ -56,9 +56,9 @@ Last updated: 2026-09-08
   densest column, edge labels appear only for the selected node's related
   links, and full raw identifiers, descriptions and status remain available in
   a structured hover tooltip and the right-side detail panel.
-- Selecting a topology node now highlights the selected node, directly
-  connected upstream/downstream nodes and directly connected edges in all graph
-  modes, including the full view.
+- Selecting a topology node now recursively highlights the selected node,
+  connected upstream/downstream nodes and connected edges across the visible
+  graph in all modes, including the full view.
 - Topology graph canvas uses 60% as the default standard view and supports
   60% to 200% zoom levels, with drag movement corrected for the active scale
   so operators can zoom into dense business links without losing manual layout
