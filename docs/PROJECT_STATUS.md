@@ -1,6 +1,6 @@
 # Project status and development handoff
 
-Last updated: 2026-09-07
+Last updated: 2026-09-08
 
 ## Current baseline
 
@@ -49,12 +49,13 @@ Last updated: 2026-09-07
   drilling into a server or switching to the full view.
 - The monitoring topology tab now links directly to the layered topology page
   to avoid confusing the legacy monitoring topology with runtime diagnosis.
-- Topology graph nodes now use compact service-map tiles with concise name,
-  type, port or PID metadata, while full raw identifiers remain available in
-  hover text and the right-side detail panel.
+- Topology graph nodes now use compact pill nodes with concise name, type,
+  port or PID metadata; empty topology columns are folded, edge labels appear
+  only for the selected node's related links, and full raw identifiers remain
+  available in hover text and the right-side detail panel.
 - Topology graph nodes can be dragged within the current canvas and connection
   anchors follow the compact node size, so operators can separate crowded
-  business links without turning the graph into large cards.
+  business links without turning the graph into card walls.
 - Topology edge labels now wrap into multiple SVG text lines with a light
   background instead of being truncated to ten characters.
 - Runtime topology now keeps business dependency calls such as MySQL, Redis,

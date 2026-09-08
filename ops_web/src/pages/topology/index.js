@@ -56,10 +56,10 @@ const sourceTypeLabel = {
 
 const confidenceLabel = {low: '低', medium: '中', high: '高'};
 const riskColor = {low: 'green', medium: 'blue', high: 'orange', critical: 'red'};
-const NODE_WIDTH = 220;
-const NODE_HEIGHT = 56;
-const COLUMN_SPACING = 270;
-const ROW_SPACING = 90;
+const NODE_WIDTH = 168;
+const NODE_HEIGHT = 38;
+const COLUMN_SPACING = 208;
+const ROW_SPACING = 58;
 const EDGE_LABEL_CHARS = 14;
 const EDGE_LABEL_LINE_HEIGHT = 14;
 
@@ -421,10 +421,11 @@ function buildLayout(nodes, edges, filter, mode, selectedHostId) {
     graph.edges.filter(item => item.is_active),
     filter,
   );
-  const order = graph.order;
+  const presentTypes = new Set(filtered.nodes.map(item => item.type));
+  const order = graph.order.filter(type => presentTypes.has(type));
   const columns = {};
   order.forEach((type, index) => {
-    columns[type] = {x: 38 + index * COLUMN_SPACING, y: 56, items: []};
+    columns[type] = {x: 28 + index * COLUMN_SPACING, y: 52, items: []};
   });
   filtered.nodes.forEach(node => {
     if (columns[node.type]) columns[node.type].items.push(node);
@@ -457,8 +458,8 @@ function buildLayout(nodes, edges, filter, mode, selectedHostId) {
     nodes: positioned,
     nodeMap,
     edges: visibleEdges,
-    width: Math.max(1120, order.length * COLUMN_SPACING + 24),
-    height: Math.max(520, 150 + maxRows * ROW_SPACING),
+    width: Math.max(760, order.length * COLUMN_SPACING + 36),
+    height: Math.max(420, 118 + maxRows * ROW_SPACING),
     columns,
   };
 }
@@ -496,16 +497,15 @@ function Node({node, selected, dragging, onSelect, onDragStart}) {
         <span className={styles.nodeTitle}>{node.name}</span>
         <span className={styles.nodeMeta}>{shortMeta}</span>
       </span>
-      <span className={styles.nodeStatus}>
+      <span className={styles.nodeStatus} title={meta.label}>
         <span className={styles.nodeStatusDot}/>
-        <span>{meta.label}</span>
       </span>
     </button>
   );
 }
 
 
-function Edge({edge, source, target, edgeTypes}) {
+function Edge({edge, source, target, edgeTypes, focused}) {
   const forward = source.x <= target.x;
   const x1 = source.x + (forward ? NODE_WIDTH : 0);
   const y1 = source.y + NODE_HEIGHT / 2;
@@ -521,10 +521,10 @@ function Edge({edge, source, target, edgeTypes}) {
   return (
     <g>
       <path
-        className={`${styles.edge} ${styles[edge.status || 'unknown']} ${edge.probed ? '' : styles.dashed}`}
+        className={`${styles.edge} ${styles[edge.status || 'unknown']} ${focused ? styles.edgeFocused : ''} ${edge.probed ? '' : styles.dashed}`}
         d={`M${x1},${y1} C${mid},${y1} ${mid},${y2} ${x2},${y2}`}
         markerEnd="url(#topology-arrow)"/>
-      <g>
+      <g className={`${styles.edgeLabelGroup} ${focused ? styles.edgeLabelFocused : ''}`}>
         <title>{label}</title>
         <rect
           className={styles.edgeLabelBg}
@@ -1252,7 +1252,8 @@ export default function TopologyIndex() {
                     edge={edge}
                     source={graph.nodeMap[edge.source]}
                     target={graph.nodeMap[edge.target]}
-                    edgeTypes={edgeTypes}/>
+                    edgeTypes={edgeTypes}
+                    focused={selected && (selected.id === edge.source || selected.id === edge.target)}/>
                 ))}
               </svg>
               {graph.nodes.map(node => (
