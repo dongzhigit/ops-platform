@@ -457,11 +457,65 @@ function buildLayout(nodes, edges, filter, mode, selectedHostId) {
   return {
     nodes: positioned,
     nodeMap,
-    edges: visibleEdges,
+    edges: routeEdges(visibleEdges, nodeMap),
     width: Math.max(760, order.length * COLUMN_SPACING + 36),
     height: Math.max(420, 118 + maxRows * ROW_SPACING),
     columns,
   };
+}
+
+
+function routeOffset(index, count, maxOffset) {
+  if (count <= 1) return 0;
+  const step = Math.min(8, (maxOffset * 2) / Math.max(count - 1, 1));
+  return (index - (count - 1) / 2) * step;
+}
+
+
+function routeEdges(edges, nodeMap) {
+  const routed = (edges || []).map(edge => ({...edge}));
+  const anchorGroups = {};
+  const pairGroups = {};
+
+  function addAnchor(edge, node, other, side, attr) {
+    const key = `${node.id}:${side}`;
+    if (!anchorGroups[key]) anchorGroups[key] = [];
+    anchorGroups[key].push({edge, other, attr});
+  }
+
+  routed.forEach(edge => {
+    const source = nodeMap[edge.source];
+    const target = nodeMap[edge.target];
+    if (!source || !target) return;
+    const forward = source.x <= target.x;
+    addAnchor(edge, source, target, forward ? 'right' : 'left', 'routeSourceOffset');
+    addAnchor(edge, target, source, forward ? 'left' : 'right', 'routeTargetOffset');
+
+    const pairKey = `${edge.source}|${edge.target}`;
+    if (!pairGroups[pairKey]) pairGroups[pairKey] = [];
+    pairGroups[pairKey].push(edge);
+  });
+
+  Object.values(anchorGroups).forEach(group => {
+    group.sort((a, b) => (
+      a.other.y - b.other.y ||
+      a.other.x - b.other.x ||
+      String(a.edge.id).localeCompare(String(b.edge.id))
+    ));
+    const maxOffset = Math.min(48, Math.max(13, group.length * 3));
+    group.forEach((item, index) => {
+      item.edge[item.attr] = routeOffset(index, group.length, maxOffset);
+    });
+  });
+
+  Object.values(pairGroups).forEach(group => {
+    group.sort((a, b) => String(a.id).localeCompare(String(b.id)));
+    group.forEach((edge, index) => {
+      edge.routeBendOffset = routeOffset(index, group.length, 22);
+    });
+  });
+
+  return routed;
 }
 
 
@@ -476,7 +530,7 @@ function applyDragPositions(layout, positions) {
   });
   const width = nextNodes.reduce((value, node) => Math.max(value, node.x + NODE_WIDTH + 48), layout.width);
   const height = nextNodes.reduce((value, node) => Math.max(value, node.y + NODE_HEIGHT + 48), layout.height);
-  return {...layout, nodes: nextNodes, nodeMap, width, height};
+  return {...layout, nodes: nextNodes, nodeMap, edges: routeEdges(layout.edges, nodeMap), width, height};
 }
 
 
@@ -508,21 +562,22 @@ function Node({node, selected, dragging, onSelect, onDragStart}) {
 function Edge({edge, source, target, edgeTypes, focused}) {
   const forward = source.x <= target.x;
   const x1 = source.x + (forward ? NODE_WIDTH : 0);
-  const y1 = source.y + NODE_HEIGHT / 2;
+  const y1 = source.y + NODE_HEIGHT / 2 + (edge.routeSourceOffset || 0);
   const x2 = target.x + (forward ? 0 : NODE_WIDTH);
-  const y2 = target.y + NODE_HEIGHT / 2;
+  const y2 = target.y + NODE_HEIGHT / 2 + (edge.routeTargetOffset || 0);
   const mid = (x1 + x2) / 2;
+  const bend = edge.routeBendOffset || 0;
   const label = edge.label || edgeTypes[edge.type] || '连接';
   const labelLines = splitEdgeLabel(label);
   const labelX = (x1 + x2) / 2;
   const labelHeight = labelLines.length * EDGE_LABEL_LINE_HEIGHT + 8;
   const labelWidth = Math.max(72, Math.max(...labelLines.map(labelTextWidth)) + 16);
-  const labelTop = (y1 + y2) / 2 - labelHeight / 2;
+  const labelTop = (y1 + y2) / 2 + bend - labelHeight / 2;
   return (
     <g>
       <path
         className={`${styles.edge} ${styles[edge.status || 'unknown']} ${focused ? styles.edgeFocused : ''} ${edge.probed ? '' : styles.dashed}`}
-        d={`M${x1},${y1} C${mid},${y1} ${mid},${y2} ${x2},${y2}`}
+        d={`M${x1},${y1} C${mid},${y1 + bend} ${mid},${y2 + bend} ${x2},${y2}`}
         markerEnd="url(#topology-arrow)"/>
       <g className={`${styles.edgeLabelGroup} ${focused ? styles.edgeLabelFocused : ''}`}>
         <title>{label}</title>
